@@ -1,0 +1,90 @@
+
+
+Bathysonde:
+Manque les CTD traitées: 5 et 6
+
+
+MVP:
+Manque les données du stationary 2 et 5 (normal) 
+et la 1 n'a pas de fichier traité et en raw, n'a qu'une descente
+
+Manque les fiches de cali brations capteurs pour faire la conversion en unité physique 
+    pour: dissomved_oxygen, temp_oxsensor, suna, fluo, turb, ph
+
+
+
+Correspondance id profil ESSTECH25:
+CTD mat MVP mat     CTD id     MVP id          commentaire
+0       0               S001       bathy 0
+1       5               S002       bathy 7
+2       4               S003       bathy 6
+3       2-3             S004       bathy 4     deux fichiers MVP car bug, le 1er desend à 150m puis remonte, le second descend à 1000m mais s'arrête à 865 sur la montée
+4        1               S005       bathy 3     
+                        S006       bathy 1    + manque fichier M1 dans mvp -> problème de courant donc annulée
+
+
+
+
+Grosse différence entre CTD bathysonde et MVP, surtout en surface!
+
+
+- check raw MVP ctd 
+    -> absolument aucune différence entre .raw et .m1
+    -> le temps n'apparait pas dans les fichier, la frequence d'echantillonage aussi ...
+
+- process routines on MVP 
+    - vertical interpolation
+
+Le process:
+     Viscous heating correction / Filtering of surface waves -> ok marche bien 
+     temporal lag / thermal mass ne fonctionne pas, deteriore la data -> marche pas trop trop
+
+
+
+
+Mail à Darrel:
+    freq echantillonage ? car pas de timestamp sur les lignes de data
+    Fiches de calibrations ?
+    Différence .m1  et .raw ?
+
+
+
+
+
+
+
+Mail 2:
+
+-Bathy 4 la seconde tentative s'arrête à 865m sur la montée
+
+-A to B - 4 knots: plusieurs interruptions sur la 7e plongée 
+    quand on descend à 930m on pred le signal puis on le recupère quand on est en train de remonter à 850m puis plusieurs autres coupures sur la montée (on perd 100m par coupure)
+    pareil sur la 17e plongée (en comptant les fichiers séparés), on perd encore pas mal de data
+
+- SUNA, je ne trouve pas la formule de calibration
+
+- Calib date de juillet 24
+
+
+Notes BGC:
+    OXY: OK (calib aout 24)
+    PH: donnée assez étonnante, grosse différe ce montée descente (calibration de juillet 24)
+    FLUO: offset FLuo bgc +0.61 ug/l + scle factor (calib juillet 24)
+    TURB: pareil (même capteur)
+    SUNA: pas de fiche de calibration
+
+
+
+Discussion 01/09 avec Sabrina
+Comparer CTD montee descente
+Darrel mail lien avecc Seabird
+Traduire Ferrybox 
+spirit cluster ipsl 
+
+
+conclusion avec table
+demander vitesse verticale à Darrell
+
+
+
+Ecrire à Andrea pour le MVP
