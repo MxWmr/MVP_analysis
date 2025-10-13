@@ -50,10 +50,6 @@ def gamma_C(PRES0, TEMP0, COND0, DIR, sens_corr,max_depth):
 
 
 
-    # mask = PRES0 <= max_depth
-    # TEMP0 = np.where(mask, TEMP0, np.nan)
-    # PRES0 = np.where(mask, PRES0, np.nan)
-    # COND0 = np.where(mask, COND0, np.nan)
 
     if sens_corr=='up':
         ind = np.where(np.asarray(DIR)=='up')[0]
@@ -171,11 +167,7 @@ def nan_convolve2d(mat, kernel):
 
 def gamma_S(PRES0, TEMP0, SAL0, DIR, sens_corr,max_depth):
 
-    mask = PRES0 <= max_depth
-    TEMP0 = np.where(mask, TEMP0, np.nan)
-    PRES0 = np.where(mask, PRES0, np.nan)
-    SAL0 = np.where(mask, SAL0, np.nan)
-    
+
 
     if sens_corr=='up':
         ind = np.where(np.asarray(DIR)=='up')[0]
@@ -368,7 +360,6 @@ def facteur_corrections_TC(TEMP0,COND0,TIME,PRES0,LON0,LAT0,Gamma,T_gamma, C_gam
 def find_coefficients_TC(TEMP0, COND0, TIME, PRES0, LON0, LAT0, Gamma, T_gamma, C_gamma,DIR, n_rad_corr,n_rad_comp,var_corr,coeff,bnds,max_depth):
     if DIR[n_rad_corr]=='down':
         ind = np.where(np.isnan(PRES0[n_rad_corr,:])==0)[0]
-        ind = ind[PRES0[n_rad_corr,ind]<=max_depth]
         TEMP_raw = TEMP0[n_rad_corr,ind]
         COND_raw = COND0[n_rad_corr,ind]
         TIME_raw = TIME[n_rad_corr,ind]
@@ -378,7 +369,6 @@ def find_coefficients_TC(TEMP0, COND0, TIME, PRES0, LON0, LAT0, Gamma, T_gamma, 
         del ind
 
         ind = np.where(np.isnan(PRES0[n_rad_comp,:])==0)[0]
-        ind = ind[PRES0[n_rad_comp,ind]<=max_depth]
         TEMP_comp = np.flip(TEMP0[n_rad_comp,ind])
         COND_comp = np.flip(COND0[n_rad_comp,ind])
         TIME_comp = np.flip(TIME[n_rad_comp,ind])
@@ -389,7 +379,6 @@ def find_coefficients_TC(TEMP0, COND0, TIME, PRES0, LON0, LAT0, Gamma, T_gamma, 
 
     if DIR[n_rad_corr]=='up':
         ind = np.where(np.isnan(PRES0[n_rad_corr,:])==0)[0]
-        ind = ind[PRES0[n_rad_corr,ind]<=max_depth]
         TEMP_raw = np.flip(TEMP0[n_rad_corr,ind])
         COND_raw = np.flip(COND0[n_rad_corr,ind])
         TIME_raw = np.flip(TIME[n_rad_corr,ind])
@@ -399,8 +388,6 @@ def find_coefficients_TC(TEMP0, COND0, TIME, PRES0, LON0, LAT0, Gamma, T_gamma, 
         del ind
 
         ind = np.where(np.isnan(PRES0[n_rad_comp,:])==0)[0]
-        ind = ind[PRES0[n_rad_comp,ind]<=max_depth]
-
         TEMP_comp = TEMP0[n_rad_comp,ind]
         COND_comp = COND0[n_rad_comp,ind]
         TIME_comp = TIME[n_rad_comp,ind]
@@ -468,15 +455,17 @@ def calcul_Aire_ref(T_raw, T_comp, C_raw, C_comp, Time_raw, Time_comp, Pr_raw, P
         Sigma_comp = gsw.rho(SA_comp,CT_comp,Pr_comp)
         del CT_comp, SA_comp
     elif var_corr=='sal':
-        SA_raw = gsw.SA_from_SP(C_raw,Pr_raw,Lon_raw,Lat_raw)
+        S_raw = gsw.SP_from_C(C_raw,T_raw,Pr_raw)
+        SA_raw = gsw.SA_from_SP(S_raw,Pr_raw,Lon_raw,Lat_raw)
         CT_raw = gsw.CT_from_t(SA_raw,T_raw,Pr_raw)
         Sigma_raw = gsw.rho(SA_raw,CT_raw,Pr_raw)
-        del CT_raw, SA_raw
+        del CT_raw, S_raw, SA_raw
     
-        SA_comp = gsw.SA_from_SP(C_comp,Pr_comp,Lon_comp,Lat_comp)
+        S_comp = gsw.SP_from_C(C_comp,T_comp,Pr_comp)
+        SA_comp = gsw.SA_from_SP(S_comp,Pr_comp,Lon_comp,Lat_comp)
         CT_comp = gsw.CT_from_t(SA_comp,T_comp,Pr_comp)
         Sigma_comp = gsw.rho(SA_comp,CT_comp,Pr_comp)
-        del CT_comp, SA_comp
+        del CT_comp, S_comp, SA_comp
     dens_min = np.nanmax([np.nanmin(Sigma_raw), np.nanmin(Sigma_comp)])
     dens_max = np.nanmin([np.nanmax(Sigma_raw), np.nanmax(Sigma_comp)])
     dens_mask1 = np.where((dens_min <= Sigma_raw) & (Sigma_raw <= dens_max))[0]
@@ -589,26 +578,25 @@ def calcul_Aire(params, Aire_ref, T_raw, T_comp, C_raw, C_comp, Time_raw, Time_c
                 Sigma_comp = gsw.rho(SA_comp,CT_comp,Pr_comp)
                 del CT_comp, SA_comp
             elif var_corr=='sal':
-                SA_corr = gsw.SA_from_SP(C_corr,Pr_raw,Lon_raw,Lat_raw)
+                S_corr = gsw.SP_from_C(C_corr,T_raw,Pr_raw)
+                SA_corr = gsw.SA_from_SP(S_corr,Pr_raw,Lon_raw,Lat_raw)
                 CT_corr = gsw.CT_from_t(SA_corr,T_raw,Pr_raw)
                 Sigma_corr1 = gsw.rho(SA_corr,CT_corr,Pr_raw)
-                del CT_corr, SA_corr   
+                del CT_corr, S_corr, SA_corr   
 
-                SA_corr = gsw.SA_from_SP(C_corr,Pr_raw,Lon_raw,Lat_raw)
+                S_corr = gsw.SP_from_C(C_raw,T_corr,Pr_raw)
+                SA_corr = gsw.SA_from_SP(S_corr,Pr_raw,Lon_raw,Lat_raw)
                 CT_corr = gsw.CT_from_t(SA_corr,T_corr,Pr_raw)
                 Sigma_corr2 = gsw.rho(SA_corr,CT_corr,Pr_raw)
-                del CT_corr, SA_corr
+                del CT_corr, S_corr, SA_corr
 
-                SA_raw = gsw.SA_from_SP(C_raw,Pr_raw,Lon_raw,Lat_raw)
-                CT_raw = gsw.CT_from_t(SA_raw,T_raw,Pr_raw)
-                Sigma_raw = gsw.rho(SA_raw,CT_raw,Pr_raw)
-                del CT_raw, SA_raw
 
-                SA_comp = gsw.SA_from_SP(C_comp,Pr_comp,Lon_comp,Lat_comp)
+                S_comp = gsw.SP_from_C(C_comp,T_comp,Pr_comp)
+                SA_comp = gsw.SA_from_SP(S_comp,Pr_comp,Lon_comp,Lat_comp)
                 CT_comp = gsw.CT_from_t(SA_comp,T_comp,Pr_comp)
                 Sigma_comp = gsw.rho(SA_comp,CT_comp,Pr_comp)
-                del CT_comp, SA_comp
-
+                del CT_comp, S_comp, SA_comp
+                
             dens_min = np.nanmax([np.nanmin(Sigma_corr1), np.nanmin(Sigma_corr2)])
             dens_min = np.nanmax([np.nanmin(dens_min), np.nanmin(Sigma_comp)])
             dens_max = np.nanmin([np.nanmax(Sigma_corr1), np.nanmax(Sigma_corr2)])

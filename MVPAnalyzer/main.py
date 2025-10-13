@@ -19,27 +19,21 @@
 
 
 
-from cProfile import label
-from math import tau
-from tkinter import Label
-from matplotlib import legend
-from matplotlib.pyplot import plot
+
 import numpy as np 
 import glob
 from datetime import datetime
 import matplotlib.pyplot as plt
 import os
 import gsw
-from regex import P, T
 from seabird.cnv import fCNV
 from tqdm import tqdm
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
-from xarray import corr
 import xarray as xr
 from . import mvp_routines as mvp
 from . import temporal_lag_correction as tlc
-from . import thermal_mass_correction as tmc
+from . import thermal_mass_correction_bis as tmc
   
 class Analyzer:
     def __init__(self, data_path, output_path=None, subdirs=False,  Yorig=1950):
@@ -967,7 +961,7 @@ class Analyzer:
         plt.xlabel('Salinity, psu') 
         plt.ylabel('Temperature, C')
 
-    def stat_compar(self,id_mvp=[],id_ctd=None,num_sample=5000,cond=False,speed=False):
+    def stat_compar(self,id_mvp=[],id_ctd=None,num_sample=5000,cond=False,speed=False,correction=False):
         """
         Statistically compare MVP and CTD profiles (temperature and salinity),
         print statistics and interpolated differences.
@@ -987,16 +981,27 @@ class Analyzer:
         if len(id_mvp) != len(id_ctd):
             raise ValueError("id_mvp and id_ctd must have the same length.")
 
+        if correction:
+            Pres = self.PRES_mvp_corr
+            Temp = self.TEMP_mvp_corr
+            Salt = self.SALT_mvp_corr
+            Cond = self.COND_mvp_corr
+        else:
+            Pres = self.PRES_mvp
+            Temp = self.TEMP_mvp
+            Salt = self.SALT_mvp
+            Cond = self.COND_mvp
+        Do = self.DO_mvp
 
         # Interpolate MVP and CTD data to match pressure levels
-        pmin = np.nanmin(self.PRES_mvp)
-        pmax = np.nanmax(self.PRES_mvp)
+        pmin = np.nanmin(Pres)
+        pmax = np.nanmax(Pres)
         pressure_grid = np.linspace(pmin, pmax, num_sample)
 
-        TEMP_mvp_interp = mvp.vertical_interp(self.PRES_mvp[id_mvp,:], self.TEMP_mvp[id_mvp,:], pressure_grid)
-        SALT_mvp_interp = mvp.vertical_interp(self.PRES_mvp[id_mvp,:], self.SALT_mvp[id_mvp,:], pressure_grid)
-        DO_mvp_interp = mvp.vertical_interp(self.PRES_mvp[id_mvp,:], self.DO_mvp[id_mvp,:], pressure_grid)
-        COND_mvp_interp = mvp.vertical_interp(self.PRES_mvp[id_mvp,:], self.COND_mvp[id_mvp,:], pressure_grid) 
+        TEMP_mvp_interp = mvp.vertical_interp(Pres[id_mvp,:],Temp[id_mvp,:], pressure_grid)
+        SALT_mvp_interp = mvp.vertical_interp(Pres[id_mvp,:], Salt[id_mvp,:], pressure_grid)
+        DO_mvp_interp = mvp.vertical_interp(Pres[id_mvp,:], Do[id_mvp,:], pressure_grid)
+        COND_mvp_interp = mvp.vertical_interp(Pres[id_mvp,:], Cond[id_mvp,:], pressure_grid) 
 
         # keep only down profiles
         id_ctd1 = [id_ctd[i] for i in range(len(id_ctd)) if id_ctd[i]%2 == 0]
@@ -1266,8 +1271,6 @@ class Analyzer:
             plt.show()
 
 
-
-
     def viscous_heating_correction(self,correction=False):
         """
         Apply viscous heating correction to MVP temperature profiles.
@@ -1431,7 +1434,6 @@ class Analyzer:
         Args:
             correction (bool): If True, update corrected attributes.
         """
-        
 
         SAMP_TIME0 = np.zeros((self.TIME0.shape[0],self.TIME0.shape[1]))
         SAMP_TIME0[:] = np.nan
@@ -1479,7 +1481,6 @@ class Analyzer:
             # coeff = (0.043, 1.37, -0.26, 1.53)
             # bnds = ((-0.5, 0.5), (0, 3), (-1, 1), (0, 3.5))
             coeff = (0.0, 0.0, 4)
-            # bnds = ((-0.5, 0.5), (-0.1, 0.1), (-20, 20))
             # bnds = ((-3, 3), (-1, 1), (-20, 20))
             bnds = ((-0.5, 0.5), (-0.1, 0.1), (-20, 20))
 
@@ -1487,8 +1488,8 @@ class Analyzer:
                                                                                             Pr_T_interp, Lon_T_interp, Lat_T_interp,Gamma,T_gamma, C_gamma,\
                                                                                             self.DIR, sens_corr,var_corr,coeff,bnds,max_depth)
 
-            # print(f"alphat_apres: {alphat_apres}, \n alphac_apres: {alphac_apres}, \n tau_apres: {tau_apres}")
-            # print(f"alphat_avant: {alphat_avant}, \n alphac_avant: {alphac_avant}, \n tau_avant: {tau_avant}")
+            print(f"alphat_apres: {alphat_apres}, \n alphac_apres: {alphac_apres}, \n tau_apres: {tau_apres}")
+            print(f"alphat_avant: {alphat_avant}, \n alphac_avant: {alphac_avant}, \n tau_avant: {tau_avant}")
             if save_param:
                 tab = np.zeros((6,len(alphat_apres)))
                 tab[0,:] = alphat_apres

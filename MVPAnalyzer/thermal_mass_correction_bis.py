@@ -47,7 +47,7 @@ from tqdm import tqdm
 ################################################################################
 #
 
-def gamma_C(PRES0, TEMP0, COND0, DIR, sens_corr):
+def gamma_C(PRES0, TEMP0, COND0, DIR, sens_corr,max_depth):
 
     if sens_corr=='up':
         ind = np.where(np.asarray(DIR)=='up')[0]
@@ -147,7 +147,7 @@ def gamma_C(PRES0, TEMP0, COND0, DIR, sens_corr):
 ################################################################################
 #
 
-def gamma_S(PRES0, TEMP0, SAL0, DIR, sens_corr):
+def gamma_S(PRES0, TEMP0, SAL0, DIR, sens_corr,max_depth):
     if sens_corr=='up':
         ind = np.where(np.asarray(DIR)=='up')[0]
     elif sens_corr=='down':
@@ -478,8 +478,8 @@ def calcul_Aire_ref(T_raw, T_comp, C_raw, C_comp, Time_raw, Time_comp, Pr_raw, P
         num_data[:, 0] = x
         num_data[:, 1] = y
         
-        # A1, _ = fastdtw(exp_data, num_data)
-        A1 = similaritymeasures.area_between_two_curves(exp_data, num_data)
+        A1, _ = fastdtw(exp_data, num_data)
+        # A1 = similaritymeasures.area_between_two_curves(exp_data, num_data)
         # A1, _ = similaritymeasures.dtw(exp_data, num_data)
         del exp_data, num_data, x, y
 
@@ -614,8 +614,8 @@ def calcul_Aire(params, Aire_ref, T_raw, T_comp, C_raw, C_comp, Time_raw, Time_c
                 num_data[:, 0] = x
                 num_data[:, 1] = y
                 t1 = time.time()
-                # A1, _ = fastdtw(exp_data, num_data)
-                A1 = similaritymeasures.area_between_two_curves(exp_data, num_data)
+                A1, _ = fastdtw(exp_data, num_data)
+                # A1 = similaritymeasures.area_between_two_curves(exp_data, num_data)
                 # A1, _ = similaritymeasures.dtw(exp_data, num_data)
                 del exp_data, num_data, x, y
 
@@ -632,8 +632,8 @@ def calcul_Aire(params, Aire_ref, T_raw, T_comp, C_raw, C_comp, Time_raw, Time_c
                 num_data[:, 0] = x
                 num_data[:, 1] = y
 
-                # A2, _ = fastdtw(exp_data, num_data)
-                A2 = similaritymeasures.area_between_two_curves(exp_data, num_data)
+                A2, _ = fastdtw(exp_data, num_data)
+                # A2 = similaritymeasures.area_between_two_curves(exp_data, num_data)
                 # A2, _ = similaritymeasures.dtw(exp_data, num_data)
                 del exp_data, num_data, x, y
 

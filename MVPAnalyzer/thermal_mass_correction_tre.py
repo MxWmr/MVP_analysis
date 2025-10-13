@@ -23,6 +23,7 @@ from scipy.optimize import minimize
 from scipy import ndimage
 from scipy.interpolate import pchip_interpolate
 import similaritymeasures
+from fastdtw import fastdtw
 
 
 #
@@ -45,7 +46,15 @@ import similaritymeasures
 ################################################################################
 #
 
-def gamma_C(PRES0, TEMP0, COND0, DIR, sens_corr):
+def gamma_C(PRES0, TEMP0, COND0, DIR, sens_corr,max_depth):
+
+
+
+    mask = PRES0 <= max_depth
+    TEMP0 = np.where(mask, TEMP0, np.nan)
+    PRES0 = np.where(mask, PRES0, np.nan)
+    COND0 = np.where(mask, COND0, np.nan)
+
     if sens_corr=='up':
         ind = np.where(np.asarray(DIR)=='up')[0]
     elif sens_corr=='down':
@@ -73,13 +82,13 @@ def gamma_C(PRES0, TEMP0, COND0, DIR, sens_corr):
     C_filt = np.convolve(C0, gaussFilter,mode='same')
     P_filt = np.convolve(Pr, gaussFilter,mode='same')
 
-    pas_p = 0.25#10*np.nanmedian(np.abs(np.diff(Pr)))
-    pas_t = 0.1#10*np.nanmedian(np.abs(np.diff(T0)))
-    pas_c = 0.1#10*np.nanmedian(np.abs(np.diff(C0)))
+    pas_p = 5 #10*np.nanmedian(np.abs(np.diff(Pr)))
+    pas_t = (np.nanmax(T_filt) - np.nanmin(T_filt)) / 25
+    pas_c = (np.nanmax(C_filt) - np.nanmin(C_filt)) / 25
+
     Pre = np.arange(np.floor(np.nanmin(Pr)), np.ceil(np.nanmax(Pr)), pas_p)
     Tem = np.arange(np.floor(np.nanmin(T0)), np.ceil(np.nanmax(T0)), pas_t)
     Con = np.arange(np.floor(np.nanmin(C0)), np.ceil(np.nanmax(C0)), pas_c)
-
     gamma_c = np.zeros((len(Tem), len(Con)))
     N = np.zeros((len(Tem), len(Con)))
 
@@ -92,8 +101,10 @@ def gamma_C(PRES0, TEMP0, COND0, DIR, sens_corr):
                 T_temp = np.unique(np.round(T_filt[ind_both]/pas_t)*pas_t)
                 for i_c in range(len(C_temp)):
                     ind_C = np.where((C_temp[i_c]>=Con) & (C_temp[i_c]<Con+pas_c))[0]
+                    # ind_C = np.where(np.abs(Con - C_temp[i_c]) < pas_c/2)[0]
                     for i_t in range(len(T_temp)):
                         ind_T = np.where((T_temp[i_t]>=Tem) & (T_temp[i_t]<Tem+pas_t))[0]
+                        # ind_T = np.where(np.abs(Tem - T_temp[i_t]) < pas_t/2)[0]
                         gamma_c[ind_T,ind_C] = gamma_c[ind_T,ind_C]+coefs[0]
                         N[ind_T,ind_C] = N[ind_T,ind_C]+1
                         del ind_T
@@ -108,6 +119,7 @@ def gamma_C(PRES0, TEMP0, COND0, DIR, sens_corr):
     Gamma_C = gamma_c/N
     Gamma_C[N<=2] = np.nan
 
+
     sigma_x = np.where(np.abs(Tem-Tem[0])>=2*pas_t)[0][0]
     sxz = 5*np.where(np.abs(Tem-Tem[0])>=2*pas_t)[0][0]
     x = np.linspace(-sxz / 2, sxz / 2, sxz)
@@ -120,9 +132,22 @@ def gamma_C(PRES0, TEMP0, COND0, DIR, sens_corr):
 
     Gamma_C_filt = np.zeros((Gamma_C.shape[0], Gamma_C.shape[1]))
     Gamma_C_filt[:] = np.nan
-    Gamma_C_filt = ndimage.convolve(Gamma_C, gaussFilter,mode='constant')
-    
+    # Gamma_C_filt = ndimage.convolve(Gamma_C, gaussFilter,mode='constant')
+    Gamma_C_filt = nan_convolve2d(Gamma_C, gaussFilter)
+
     return Gamma_C_filt,Tem,Con
+
+
+def nan_convolve2d(mat, kernel):
+    mask = np.isnan(mat)
+    mat_filled = np.where(mask, 0, mat)
+    valid = (~mask).astype(float)
+    conv = ndimage.convolve(mat_filled, kernel, mode='constant', cval=0.0)
+    norm = ndimage.convolve(valid, kernel, mode='constant', cval=0.0)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        result = conv / norm
+    result[norm == 0] = np.nan
+    return result
 
 #
 ################################################################################
@@ -144,7 +169,14 @@ def gamma_C(PRES0, TEMP0, COND0, DIR, sens_corr):
 ################################################################################
 #
 
-def gamma_S(PRES0, TEMP0, SAL0, DIR, sens_corr):
+def gamma_S(PRES0, TEMP0, SAL0, DIR, sens_corr,max_depth):
+
+    mask = PRES0 <= max_depth
+    TEMP0 = np.where(mask, TEMP0, np.nan)
+    PRES0 = np.where(mask, PRES0, np.nan)
+    SAL0 = np.where(mask, SAL0, np.nan)
+    
+
     if sens_corr=='up':
         ind = np.where(np.asarray(DIR)=='up')[0]
     elif sens_corr=='down':
@@ -191,8 +223,10 @@ def gamma_S(PRES0, TEMP0, SAL0, DIR, sens_corr):
                 T_temp = np.unique(np.round(T_filt[ind_both]/pas_t)*pas_t)
                 for i_s in range(len(S_temp)):
                     ind_S = np.where((S_temp[i_s]>=Sal) & (S_temp[i_s]<Sal+pas_s))[0]
+                    # ind_S = np.where(np.abs(Sal - S_temp[i_s]) < pas_s/2)[0]
                     for i_t in range(len(T_temp)):
                         ind_T = np.where((T_temp[i_t]>=Tem) & (T_temp[i_t]<Tem+pas_t))[0]
+                        # ind_T = np.where(np.abs(Tem - T_temp[i_t]) < pas_t/2)[0]
                         gamma_s[ind_T,ind_S] = gamma_s[ind_T,ind_S]+coefs[0]
                         N[ind_T,ind_S] = N[ind_T,ind_S]+1
                         del ind_T
@@ -257,8 +291,10 @@ def gamma_S(PRES0, TEMP0, SAL0, DIR, sens_corr):
 #
 
 
-def facteur_corrections_TC(TEMP0,COND0,TIME,PRES0,LON0,LAT0,Gamma,T_gamma, C_gamma, DIR, sens_corr,var_corr):
+def facteur_corrections_TC(TEMP0,COND0,TIME,PRES0,LON0,LAT0,Gamma,T_gamma, C_gamma, DIR, sens_corr,var_corr,coeff,bnds,max_depth):
     
+
+
     if sens_corr=='up':
         ind = np.where(np.asarray(DIR)=='up')[0]
     elif sens_corr=='down':
@@ -283,16 +319,18 @@ def facteur_corrections_TC(TEMP0,COND0,TIME,PRES0,LON0,LAT0,Gamma,T_gamma, C_gam
     alphac_avant[:] = np.nan
     tau_avant = np.zeros(len(DIR))
     tau_avant[:] = np.nan
-    
+    import time
     for n_rad in range(len(ind)):
+        t1 = time.time()
         if ind[n_rad]<len(DIR)-1:
             if len(np.where(np.isnan(TEMP0[ind[n_rad]+1,:])==0)[0])>0:
                 alphat_apres[ind[n_rad]], alphac_apres[ind[n_rad]], tau_apres[ind[n_rad]] =\
-                    find_coefficients_TC(TEMP0, COND0, TIME, PRES0, LON0, LAT0, Gamma, T_gamma, C_gamma, DIR, ind[n_rad],ind[n_rad]+1,var_corr)
+                    find_coefficients_TC(TEMP0, COND0, TIME, PRES0, LON0, LAT0, Gamma, T_gamma, C_gamma, DIR, ind[n_rad],ind[n_rad]+1,var_corr,coeff,bnds,max_depth)
         if ind[n_rad]>0:
             if len(np.where(np.isnan(TEMP0[ind[n_rad]-1,:])==0)[0])>0:
                 alphat_avant[ind[n_rad]], alphac_avant[ind[n_rad]], tau_avant[ind[n_rad]] =\
-                    find_coefficients_TC(TEMP0, COND0, TIME, PRES0, LON0, LAT0, Gamma, T_gamma, C_gamma, DIR, ind[n_rad],ind[n_rad]-1,var_corr)
+                    find_coefficients_TC(TEMP0, COND0, TIME, PRES0, LON0, LAT0, Gamma, T_gamma, C_gamma, DIR, ind[n_rad],ind[n_rad]-1,var_corr,coeff,bnds,max_depth)
+        print(time.time()-t1," secondes pour le profil ", n_rad)
     del n_rad
     
     return alphat_apres,alphac_apres,tau_apres,alphat_avant,alphac_avant,tau_avant 
@@ -327,47 +365,51 @@ def facteur_corrections_TC(TEMP0,COND0,TIME,PRES0,LON0,LAT0,Gamma,T_gamma, C_gam
 ################################################################################
 #
 
-def find_coefficients_TC(TEMP0, COND0, TIME, PRES0, LON0, LAT0, Gamma, T_gamma, C_gamma,DIR, n_rad_corr,n_rad_comp,var_corr):
+def find_coefficients_TC(TEMP0, COND0, TIME, PRES0, LON0, LAT0, Gamma, T_gamma, C_gamma,DIR, n_rad_corr,n_rad_comp,var_corr,coeff,bnds,max_depth):
     if DIR[n_rad_corr]=='down':
         ind = np.where(np.isnan(PRES0[n_rad_corr,:])==0)[0]
+        ind = ind[PRES0[n_rad_corr,ind]<=max_depth]
         TEMP_raw = TEMP0[n_rad_corr,ind]
         COND_raw = COND0[n_rad_corr,ind]
-        TIME_raw = TIME[n_rad_corr,ind]-np.nanmin(TIME[n_rad_corr,ind])
+        TIME_raw = TIME[n_rad_corr,ind]
         PRES_raw = PRES0[n_rad_corr,ind]
         LAT_raw = LAT0[n_rad_corr,ind]
         LON_raw = LON0[n_rad_corr,ind]
         del ind
 
         ind = np.where(np.isnan(PRES0[n_rad_comp,:])==0)[0]
+        ind = ind[PRES0[n_rad_comp,ind]<=max_depth]
         TEMP_comp = np.flip(TEMP0[n_rad_comp,ind])
         COND_comp = np.flip(COND0[n_rad_comp,ind])
-        TIME_comp = np.flip(TIME[n_rad_comp,ind]-np.nanmin(TIME[n_rad_comp,ind]))
+        TIME_comp = np.flip(TIME[n_rad_comp,ind])
         PRES_comp = np.flip(PRES0[n_rad_comp,ind])
         LAT_comp = np.flip(LAT0[n_rad_comp,ind])
         LON_comp = np.flip(LON0[n_rad_comp,ind])
         del ind
+
     if DIR[n_rad_corr]=='up':
         ind = np.where(np.isnan(PRES0[n_rad_corr,:])==0)[0]
+        ind = ind[PRES0[n_rad_corr,ind]<=max_depth]
         TEMP_raw = np.flip(TEMP0[n_rad_corr,ind])
         COND_raw = np.flip(COND0[n_rad_corr,ind])
-        TIME_raw = np.flip(TIME[n_rad_corr,ind]-np.nanmin(TIME[n_rad_corr,ind]))
+        TIME_raw = np.flip(TIME[n_rad_corr,ind])
         PRES_raw = np.flip(PRES0[n_rad_corr,ind])
         LAT_raw = np.flip(LAT0[n_rad_corr,ind])
         LON_raw = np.flip(LON0[n_rad_corr,ind])
         del ind
 
         ind = np.where(np.isnan(PRES0[n_rad_comp,:])==0)[0]
+        ind = ind[PRES0[n_rad_comp,ind]<=max_depth]
+
         TEMP_comp = TEMP0[n_rad_comp,ind]
         COND_comp = COND0[n_rad_comp,ind]
-        TIME_comp = TIME[n_rad_comp,ind]-np.nanmin(TIME[n_rad_comp,ind])
+        TIME_comp = TIME[n_rad_comp,ind]
         PRES_comp = PRES0[n_rad_comp,ind]
         LAT_comp = LAT0[n_rad_comp,ind]
         LON_comp = LON0[n_rad_comp,ind]
         del ind
     
-    time_range = np.min([np.max(TIME_raw) - np.min(TIME_raw), np.max(TIME_comp) - np.min(TIME_comp)])
-    coeff = (0.0, 0.0, 4)
-    bnds = ((-0.5, 0.5), (-0.1, 0.1), (-20, 20))
+
     Aire_ref = calcul_Aire_ref(TEMP_raw, TEMP_comp, COND_raw, COND_comp, TIME_raw, TIME_comp, PRES_raw, PRES_comp, LON_raw, LON_comp, LAT_raw, LAT_comp, Gamma, T_gamma, C_gamma, var_corr)
     if Aire_ref==0:
         param = (0.0, 0.0, 4)
@@ -376,6 +418,9 @@ def find_coefficients_TC(TEMP0, COND0, TIME, PRES0, LON0, LAT0, Gamma, T_gamma, 
                     method='SLSQP', bounds=bnds)
 
         param = w.x
+        # print("Nombre d'itérations :", w.nit)
+        # print("Nombre d'évaluations de la fonction :", w.nfev)
+        # print("Nombre d'évaluations du gradient :", w.get('njev', None))
     return param
 
 #
@@ -463,7 +508,8 @@ def calcul_Aire_ref(T_raw, T_comp, C_raw, C_comp, Time_raw, Time_comp, Pr_raw, P
         num_data[:, 0] = x
         num_data[:, 1] = y
         
-        A1, d1 = similaritymeasures.dtw(exp_data, num_data)
+        # A1, d1 = similaritymeasures.dtw(exp_data, num_data)
+        A1, _ = fastdtw(exp_data, num_data)
         del exp_data, num_data, x, y
 
         Aire_ref = A1
@@ -601,7 +647,8 @@ def calcul_Aire(params, Aire_ref, T_raw, T_comp, C_raw, C_comp, Time_raw, Time_c
                 num_data[:, 0] = x
                 num_data[:, 1] = y
 
-                A1, d1 = similaritymeasures.dtw(exp_data, num_data)
+                # A1, d1 = similaritymeasures.dtw(exp_data, num_data)
+                A1, _ = fastdtw(exp_data, num_data)
                 del exp_data, num_data, x, y
 
                 x = T_temp2
@@ -617,7 +664,8 @@ def calcul_Aire(params, Aire_ref, T_raw, T_comp, C_raw, C_comp, Time_raw, Time_c
                 num_data[:, 0] = x
                 num_data[:, 1] = y
 
-                A2, d2 = similaritymeasures.dtw(exp_data, num_data)
+                # A2, d2 = similaritymeasures.dtw(exp_data, num_data)
+                A2, _ = fastdtw(exp_data, num_data)
                 del exp_data, num_data, x, y
 
                 Aire = A1*A2/(Aire_ref*Aire_ref)
