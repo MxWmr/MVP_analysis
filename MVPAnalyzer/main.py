@@ -20,6 +20,7 @@
 
 
 
+from math import e
 import numpy as np 
 import glob
 from datetime import datetime
@@ -53,7 +54,7 @@ class Analyzer:
         self.ctd = False
 
 
-    def load_mvp_data(self,delp=[],data_path=None,only_new=False):
+    def load_mvp_data(self,delp=[],data_path=None,format='raw',only_new=False):
         """
         Load MVP data from .raw and .log files in the data_path folder.
         Fills the object attributes with data matrices and associated metadata.
@@ -64,20 +65,60 @@ class Analyzer:
         if data_path is not None:
             self.data_path = data_path
 
-        if self.subdirs:
-            files = sorted(filter(os.path.isfile,glob.glob(self.data_path + '**/*.raw', recursive=True)))
-        else:
-            files = sorted(filter(os.path.isfile,glob.glob(self.data_path + '*.raw', recursive=self.subdirs)))
+        if format=='raw':
+            if self.subdirs:
+                files = sorted(filter(os.path.isfile,glob.glob(self.data_path + '**/*.raw', recursive=True)))
+            else:
+                files = sorted(filter(os.path.isfile,glob.glob(self.data_path + '*.raw', recursive=self.subdirs)))
 
 
-        if only_new:
-            list_output = [f for f in os.listdir(self.output_path) if f.endswith(".nc")]
-            files = [f for f in files if not "MVP_"+os.path.basename(f).replace('.raw', '.nc') in list_output]
+            if only_new:
+                list_output = [f for f in os.listdir(self.output_path) if f.endswith(".nc")]
+                files = [f for f in files if not "MVP_"+os.path.basename(f).replace('.raw', '.nc') in list_output]
 
+        elif format=='ncdf':
+            if self.subdirs:
+                files = sorted(filter(os.path.isfile,glob.glob(self.data_path + '**/MVP*.nc', recursive=True)))
+            else:
+                files = sorted(filter(os.path.isfile,glob.glob(self.data_path + 'MVP*.nc', recursive=self.subdirs)))
 
+            if only_new:
+                list_output = [f for f in os.listdir(self.output_path) if f.endswith(".nc")]
+                files = [f for f in files if not "MVP_"+os.path.basename(f) in list_output]
 
 
         print('Found ' + str(len(files)) + ' MVP files in the directory: ' + self.data_path)
+
+
+
+        if format=='ncdf':
+            
+            for f in files:
+                nc = xr.open_dataset(f)
+                self.PRES_mvp = nc['PRES'].values
+                self.TEMP_mvp = nc['TEMP'].values
+                self.COND_mvp = nc['COND'].values
+                self.SOUNDVEL_mvp = nc['SOUNDVEL'].values
+                self.DO_mvp = nc['DO'].values
+                self.TEMP2_mvp = nc['TEMP2'].values
+                self.SUNA_mvp = nc['SUNA'].values
+                self.FLUO_mvp = nc['FLUO'].values
+                self.TURB_mvp = nc['TURB'].values
+                self.PH_mvp = nc['PH'].values
+                self.SALT_mvp = nc['SAL'].values
+                self.TIME_mvp = nc['TIME_s'].values
+                self.LAT_mvp = nc['LATITUDE'].values
+                self.LON_mvp = nc['LONGITUDE'].values
+                self.DATETIME_mvp = nc['profile_time'].values
+                self.DIR = nc['direction'].values
+                self.label_mvp = nc['profile'].values
+                self.freq_echant = nc.attrs['sampling frequency_hz']
+
+                nc.close()
+                print('MVP data loaded successfully.')
+                self.mvp = True
+
+                return
 
         PRES_temp = []
         TEMP_temp = []
@@ -107,15 +148,16 @@ class Analyzer:
 
             # Get start and end time of the cycle
 
-            (mvp_tstart,mvp_tend,cycle_dur, lat, lon, dt_station) = mvp.get_log(mvp_log_name,self.Yorig)
+            if format=='raw':
+                (mvp_tstart,mvp_tend,cycle_dur, lat, lon, dt_station) = mvp.get_log(mvp_log_name,self.Yorig)
 
-            
+
             if cycle_dur>1:
 
                 # Read one cycle MVP data  
                 (pres,soundvel,cond,temp,do_raw,temp2_raw,suna_raw,fluo_raw,turb_raw,ph_raw) = mvp.read_mvp_cycle_raw(mvp_dat_name)
                 (pres,soundvel,cond,temp,do,temp2,suna,fluo,turb,ph) = mvp.raw_data_conversion(pres,soundvel,cond,temp,do_raw,temp2_raw,suna_raw,fluo_raw,turb_raw,ph_raw)
-                
+            
 
                 freq_echant = float(len(pres)/cycle_dur)
 
@@ -124,9 +166,8 @@ class Analyzer:
                 if np.nanmax(pres)-np.nanmin(pres)>2:
 
                     # Allocate time to samples and select the ascending part 
-                    (pres_up,soundvel_up,cond_up,temp_up,do_up,temp2_up,suna_up,fluo_up,turb_up,ph_up,time_up) = mvp.time_mvp_cycle_up(pres,soundvel,cond,temp,do,temp2,suna,fluo,turb,ph,mvp_tstart,mvp_tend)
-                    (pres_down,soundvel_down,cond_down,temp_down,do_down,temp2_down,suna_down,fluo_down,turb_down,ph_down,time_down) = mvp.time_mvp_cycle_down(pres,soundvel,cond,temp,do,temp2,suna,fluo,turb,ph,mvp_tstart,mvp_tend)
-
+                    (pres_up,soundvel_up,cond_up,temp_up,do_up,temp2_up,suna_up,fluo_up,turb_up,ph_up,time_up) = mvp.time_mvp_cycle_up([pres,soundvel,cond,temp,do,temp2,suna,fluo,turb,ph],mvp_tstart,mvp_tend)
+                    (pres_down,soundvel_down,cond_down,temp_down,do_down,temp2_down,suna_down,fluo_down,turb_down,ph_down,time_down) = mvp.time_mvp_cycle_down([pres,soundvel,cond,temp,do,temp2,suna,fluo,turb,ph],mvp_tstart,mvp_tend)
 
                     if len(pres_down)>0:
                         if np.nanmax(pres_down)-np.nanmin(pres_down)>2:
@@ -168,7 +209,6 @@ class Analyzer:
                             TIME_mvp_temp.append(time_up)
                             LAT_temp.append(lat)
                             LON_temp.append(lon)
-
                             DIR.append('up')
                             Label_mvp.append(mvp_dat_name.replace('\\','/').split('/')[-2])
 
@@ -260,7 +300,8 @@ class Analyzer:
 
 
 
-    def load_mvp_data_again(self,data_path,delp=[]):
+
+    def load_mvp_data_again(self,data_path=None,format='raw',delp=[]):
         """
         Load MVP data from .raw and .log files in the data_path folder.
         Fills the object attributes with data matrices and associated metadata.
@@ -270,10 +311,45 @@ class Analyzer:
         """
         if data_path is not None:
             self.data_path = data_path
-
-
-        files = sorted(filter(os.path.isfile,glob.glob(self.data_path + '**/*.raw', recursive=True)))
+        
+        if format=='raw':
+            files = sorted(filter(os.path.isfile,glob.glob(self.data_path + '**/MVP*.raw', recursive=True)))
+        elif format=='ncdf':
+            files = sorted(filter(os.path.isfile,glob.glob(self.data_path + '**/MVP*.nc', recursive=True)))
         print('Found ' + str(len(files)) + ' MVP files in the directory: ' + self.data_path)
+
+
+
+        if format=='ncdf':
+            for f in files:
+                nc = xr.open_dataset(f)
+                self.PRES_mvp = nc['PRES'].values
+                self.TEMP_mvp = nc['TEMP'].values
+                self.COND_mvp = nc['COND'].values
+                self.SOUNDVEL_mvp = nc['SOUNDVEL'].values
+                self.DO_mvp = nc['DO'].values
+                self.TEMP2_mvp = nc['TEMP2'].values
+                self.SUNA_mvp = nc['SUNA'].values
+                self.FLUO_mvp = nc['FLUO'].values
+                self.TURB_mvp = nc['TURB'].values
+                self.PH_mvp = nc['PH'].values
+                self.SALT_mvp = nc['SAL'].values
+                self.TIME_mvp = nc['TIME'].values
+                self.LAT_mvp = nc['LATITUDE'].values
+                self.LON_mvp = nc['LONGITUDE'].values
+                self.DATETIME_mvp = nc['profile_time'].values
+                self.DIR = nc['direction'].values
+                self.Label_mvp = nc['profile'].values
+                self.freq_echant = nc.attrs['sampling frequency_hz']
+
+                nc.close()
+                print('MVP data loaded successfully.')
+                self.mvp = True
+
+                return
+
+
+
 
         PRES_temp = []
         TEMP_temp = []
@@ -302,16 +378,16 @@ class Analyzer:
             mvp_log_name=mvp_dat_name[:-4]+'.log'
 
             # Get start and end time of the cycle
-
             (mvp_tstart,mvp_tend,cycle_dur, lat, lon, dt_station) = mvp.get_log(mvp_log_name,self.Yorig)
 
             
             if cycle_dur>1:
 
                 # Read one cycle MVP data  
+
                 (pres,soundvel,cond,temp,do_raw,temp2_raw,suna_raw,fluo_raw,turb_raw,ph_raw) = mvp.read_mvp_cycle_raw(mvp_dat_name)
                 (pres,soundvel,cond,temp,do,temp2,suna,fluo,turb,ph) = mvp.raw_data_conversion(pres,soundvel,cond,temp,do_raw,temp2_raw,suna_raw,fluo_raw,turb_raw,ph_raw)
-
+                   
 
                 freq_echant = float(len(pres)/cycle_dur)
 
@@ -320,8 +396,8 @@ class Analyzer:
                 if np.nanmax(pres)-np.nanmin(pres)>2:
 
                     # Allocate time to samples and select the ascending part 
-                    (pres_up,soundvel_up,cond_up,temp_up,do_up,temp2_up,suna_up,fluo_up,turb_up,ph_up,time_up) = mvp.time_mvp_cycle_up(pres,soundvel,cond,temp,do,temp2,suna,fluo,turb,ph,mvp_tstart,mvp_tend)
-                    (pres_down,soundvel_down,cond_down,temp_down,do_down,temp2_down,suna_down,fluo_down,turb_down,ph_down,time_down) = mvp.time_mvp_cycle_down(pres,soundvel,cond,temp,do,temp2,suna,fluo,turb,ph,mvp_tstart,mvp_tend)
+                    (pres_up,soundvel_up,cond_up,temp_up,do_up,temp2_up,suna_up,fluo_up,turb_up,ph_up,time_up) = mvp.time_mvp_cycle_up([pres,soundvel,cond,temp,do,temp2,suna,fluo,turb,ph],mvp_tstart,mvp_tend)
+                    (pres_down,soundvel_down,cond_down,temp_down,do_down,temp2_down,suna_down,fluo_down,turb_down,ph_down,time_down) = mvp.time_mvp_cycle_down([pres,soundvel,cond,temp,do,temp2,suna,fluo,turb,ph],mvp_tstart,mvp_tend)
 
 
                     if len(pres_down)>0:
@@ -478,7 +554,7 @@ class Analyzer:
         self.mvp = True
 
 
-    def load_ctd_data(self,data_path_ctd):
+    def load_ctd_data(self,data_path_ctd,format='cnv'):
         """
         Load CTD data from .cnv files in the data_path_ctd folder.
         Fills the object attributes with data matrices and associated metadata.
@@ -487,11 +563,17 @@ class Analyzer:
         """
 
 
-
-        list_of_ctd_files = sorted(filter(os.path.isfile,\
-                           glob.glob(data_path_ctd + '*.cnv')))
-
+        if format=='cnv':
+            list_of_ctd_files = sorted(filter(os.path.isfile,\
+                            glob.glob(data_path_ctd + '*.cnv')))
+        elif format=='ncdf':
+            list_of_ctd_files = sorted(filter(os.path.isfile,\
+                            glob.glob(data_path_ctd + 'CTD'+'*.nc')))
         print('Found ' + str(len(list_of_ctd_files)) + ' CTD files in the directory: ' + data_path_ctd)
+
+
+
+
 
         # keys: ['scan', 'timeJ', 'timeQ', 'LATITUDE', 'LONGITUDE', 'PRES', 'TEMP', 'CNDC', 'descentrate', 'flECO-AFL', 'v1', 'wetCDOM', 'v0', 'turbWETntu0', 'v5', 'CStarTr0', 'CStarAt0', 'oxygen_ml_L', 'oxsolML/L', 'v2', 'flag', 'timeS']
         LAT_ctd_temp = []
@@ -506,8 +588,59 @@ class Analyzer:
         DATETIME_ctd = []
         SALT_ctd_temp = []
 
+        if format=='ncdf':
+            for f in list_of_ctd_files:
+                nc = xr.open_dataset(f)
+                PRES_ctd_temp.append(nc['PRES'].values[0])
+                PRES_ctd_temp.append(nc['PRES'].values[1])
+                TEMP_ctd_temp.append(nc['TEMP'].values[0])
+                TEMP_ctd_temp.append(nc['TEMP'].values[1])
+                COND_ctd_temp.append(nc['COND'].values[0])
+                COND_ctd_temp.append(nc['COND'].values[1])
+                SALT_ctd_temp.append(nc['SAL'].values[0])
+                SALT_ctd_temp.append(nc['SAL'].values[1])
+                TURB_ctd_temp.append(nc['TURB'].values[0])
+                TURB_ctd_temp.append(nc['TURB'].values[1])
+                OXY_ctd_temp.append(nc['OXY'].values[0])
+                OXY_ctd_temp.append(nc['OXY'].values[1])
+                FLUO_ctd_temp.append(nc['FLUO'].values[0])
+                FLUO_ctd_temp.append(nc['FLUO'].values[1])
+                CDOM_ctd_temp.append(nc['CDOM'].values[0])
+                CDOM_ctd_temp.append(nc['CDOM'].values[1])
+                LAT_ctd_temp.append(nc['LATITUDE'].values[0])
+                LAT_ctd_temp.append(nc['LATITUDE'].values[1])
+                LON_ctd_temp.append(nc['LONGITUDE'].values[0])
+                LON_ctd_temp.append(nc['LONGITUDE'].values[1])
+                DATETIME_ctd.append(nc['profile_time'].values[0])
+
+                nc.close()
+
+            self.PRES_ctd = np.array(PRES_ctd_temp)
+            self.TEMP_ctd = np.array(TEMP_ctd_temp)
+            self.COND_ctd = np.array(COND_ctd_temp)
+            self.SALT_ctd = np.array(SALT_ctd_temp)
+            self.TURB_ctd = np.array(TURB_ctd_temp)
+            self.OXY_ctd = np.array(OXY_ctd_temp)
+            self.FLUO_ctd = np.array(FLUO_ctd_temp)
+            self.CDOM_ctd = np.array(CDOM_ctd_temp)
+            self.LAT_ctd = np.array(LAT_ctd_temp)
+            self.LON_ctd = np.array(LON_ctd_temp)
+            self.DATETIME_ctd = np.array(DATETIME_ctd)
+
+
+            print('CTD data loaded successfully.')
+            self.ctd = True
+
+            return
+            
+
+
+
+
+
         for ctd_dat_name in tqdm(list_of_ctd_files[0:]):
             ctd_files = ctd_dat_name
+
             cnv = fCNV(ctd_files)
 
             Lat_up,Lat_down = split_ctd(cnv['PRES'], cnv['LATITUDE'])
@@ -520,7 +653,7 @@ class Analyzer:
             Fluo_up,Fluo_down = split_ctd(cnv['PRES'], cnv['flECO-AFL'])
             Cdom_up,Cdom_down = split_ctd(cnv['PRES'], cnv['wetCDOM'])
             Salt_up,Salt_down = split_ctd(cnv['PRES'], gsw.SP_from_C(cnv['CNDC']*10, cnv['TEMP'], cnv['PRES']))
-
+    
 
 
 
@@ -612,6 +745,22 @@ class Analyzer:
 
         print('CTD data loaded successfully.')
         self.ctd = True
+
+
+    def compute_waterflow(self,horizontal_speed):
+        """
+        Compute the water flow speed (u,v) from the horizontal speed and the direction of the profiles.
+        Args:
+            horizontal_speed (float): Horizontal speed of the boat in cm/s.
+        """
+        
+
+        SPEED_MVP = np.zeros((self.PRES_mvp.shape[0], self.PRES_mvp.shape[1]))
+        for i in range(self.PRES_mvp.shape[0]):
+            SPEED_MVP[i,:] = np.sqrt(np.gradient(self.PRES_mvp[i,:], 1/self.freq_echant)**2+ horizontal_speed**2)
+
+        self.SPEED_mvp = SPEED_MVP
+        print('Water flow speed computed successfully.')
 
     def print_profile_metadata(self):
         """

@@ -4,6 +4,7 @@ Input: 6 time series (T, C, P for downcast and upcast)
 Output: 8 parameters (alpha0, alphaS, tau0, tauS for up and down)
 """
 
+from turtle import speed
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -109,7 +110,7 @@ class ThermalMassCorrectionNet(nn.Module):
         return parameters
 
 
-def garau_correction(T, C, P, alpha0, alphaS, tau0, tauS, dt=0.04):
+def garau_correction(T, C, P, V, alpha0, alphaS, tau0, tauS, fs=20):
     """
     Apply Garau et al. 2011 thermal mass correction
     
@@ -117,43 +118,34 @@ def garau_correction(T, C, P, alpha0, alphaS, tau0, tauS, dt=0.04):
         T: Temperature time series (torch.Tensor)
         C: Conductivity time series (torch.Tensor)
         P: Pressure time series (torch.Tensor)
+        V: flow speed
         alpha0: Alpha coefficient at surface pressure
         alphaS: Alpha salinity dependence
         tau0: Tau coefficient at surface pressure
         tauS: Tau salinity dependence
-        dt: Sampling interval in seconds
+        fs: sampling frequency
         
     Returns:
         C_corrected: Corrected conductivity
     """
     batch_size, seq_len = T.shape
     
-    # Initialize corrected conductivity
-    C_corrected = torch.zeros_like(C)
-    C_corrected[:, 0] = C[:, 0]  # First point unchanged
-    
-    # Compute salinity for parameter calculation (approximate)
-    S_approx = gsw_sp_from_c_torch(C, T, P)
-    
-    # Pressure-dependent parameters (Garau et al. 2011)
-    # alpha(P) = alpha0 * (1 + alpha_p * P)
-    # tau(P) = tau0 * (1 + tau_p * P)  
+    # Initialize corrected temperature
+    T_corrected = torch.clone(T)
+        
+
     # For simplicity, using constant coefficients here
-    alpha = alpha0.unsqueeze(1) + alphaS.unsqueeze(1) * S_approx
-    tau = tau0.unsqueeze(1) + tauS.unsqueeze(1) * S_approx
+    alpha = alpha0.unsqueeze(1) + alphaS.unsqueeze(1) * V
+    tau = tau0.unsqueeze(1) + tauS.unsqueeze(1) * V
     
+    a = 4*fs*alpha*tau/(1+4*fs*tau)
+    b = 1 - 2*a/alpha
+
     # Apply recursive correction
     for i in range(1, seq_len):
-        dT_dt = (T[:, i] - T[:, i-1]) / dt
-        
-        # Thermal mass correction term
-        thermal_term = alpha[:, i] * tau[:, i] * dT_dt
-        
-        # Recursive correction
-        C_corrected[:, i] = C[:, i] + thermal_term - \
-                           (C_corrected[:, i-1] - C[:, i-1]) * torch.exp(-dt / tau[:, i])
-    
-    return C_corrected
+        T_corrected[:,i] = -b[:,i-1] * T_corrected[:,i-1] + a[:,i] * (T[:,i] - T[:,i-1])
+
+    return T_corrected
 
 
 def gsw_sp_from_c_torch(C, T, P):
@@ -179,7 +171,7 @@ class ThermalMassLoss(nn.Module):
         super(ThermalMassLoss, self).__init__()
         self.mse_loss = nn.MSELoss()
         
-    def forward(self, predicted_params, T_down, C_down, P_down, T_up, C_up, P_up, 
+    def forward(self, predicted_params, T_down, C_down, P_down, V_down, T_up, C_up, P_up, V_up,
                 S_ctd_down, S_ctd_up, valid_mask_down=None, valid_mask_up=None):
         """
         Compute loss based on salinity difference with CTD
@@ -208,14 +200,14 @@ class ThermalMassLoss(nn.Module):
         tauS_up = predicted_params[:, 7]
         
         # Apply corrections
-        C_down_corrected = garau_correction(T_down, C_down, P_down, 
+        T_down_corrected = garau_correction(T_down, C_down, P_down, V_down,
                                           alpha0_down, alphaS_down, tau0_down, tauS_down)
-        C_up_corrected = garau_correction(T_up, C_up, P_up,
+        T_up_corrected = garau_correction(T_up, C_up, P_up, V_up,
                                         alpha0_up, alphaS_up, tau0_up, tauS_up)
         
         # Compute corrected salinity
-        S_down_corrected = gsw_sp_from_c_torch(C_down_corrected, T_down, P_down)
-        S_up_corrected = gsw_sp_from_c_torch(C_up_corrected, T_up, P_up)
+        S_down_corrected = gsw_sp_from_c_torch(C_down, T_down_corrected, P_down)
+        S_up_corrected = gsw_sp_from_c_torch(C_up, T_up_corrected, P_up)
         
         # Compute losses
         if valid_mask_down is not None:
@@ -267,10 +259,12 @@ class ThermalMassDataset(torch.utils.data.Dataset):
         temp_down = torch.FloatTensor(self.mvp_data['TEMP_down'][idx])
         cond_down = torch.FloatTensor(self.mvp_data['COND_down'][idx])
         pres_down = torch.FloatTensor(self.mvp_data['PRES_down'][idx])
+        speed_down = torch.FloatTensor(self.mvp_data['SPEED_down'][idx])
         
         temp_up = torch.FloatTensor(self.mvp_data['TEMP_up'][idx])
         cond_up = torch.FloatTensor(self.mvp_data['COND_up'][idx])
         pres_up = torch.FloatTensor(self.mvp_data['PRES_up'][idx])
+        speed_up = torch.FloatTensor(self.mvp_data['SPEED_up'][idx])
         
         # Get CTD reference
         salt_ctd_down = torch.FloatTensor(self.ctd_data['SALT_down'][idx])
@@ -285,10 +279,12 @@ class ThermalMassDataset(torch.utils.data.Dataset):
             temp_down = torch.cat([temp_down, torch.zeros(pad_len)])
             cond_down = torch.cat([cond_down, torch.zeros(pad_len)])
             pres_down = torch.cat([pres_down, torch.zeros(pad_len)])
+            speed_down = torch.cat([speed_down, torch.zeros(pad_len)])
             
             temp_up = torch.cat([temp_up, torch.zeros(pad_len)])
             cond_up = torch.cat([cond_up, torch.zeros(pad_len)])
             pres_up = torch.cat([pres_up, torch.zeros(pad_len)])
+            speed_up = torch.cat([speed_up, torch.zeros(pad_len)])
             
             salt_ctd_down = torch.cat([salt_ctd_down, torch.zeros(pad_len)])
             salt_ctd_up = torch.cat([salt_ctd_up, torch.zeros(pad_len)])
@@ -296,10 +292,12 @@ class ThermalMassDataset(torch.utils.data.Dataset):
             temp_down = temp_down[:self.sequence_length]
             cond_down = cond_down[:self.sequence_length]
             pres_down = pres_down[:self.sequence_length]
+            speed_down = speed_down[:self.sequence_length]
             
             temp_up = temp_up[:self.sequence_length]
             cond_up = cond_up[:self.sequence_length]
             pres_up = pres_up[:self.sequence_length]
+            speed_up = speed_up[:self.sequence_length]
             
             salt_ctd_down = salt_ctd_down[:self.sequence_length]
             salt_ctd_up = salt_ctd_up[:self.sequence_length]
@@ -315,121 +313,13 @@ class ThermalMassDataset(torch.utils.data.Dataset):
             'temp_down': temp_down,
             'cond_down': cond_down,
             'pres_down': pres_down,
+            'speed_down': speed_down,
             'temp_up': temp_up,
             'cond_up': cond_up,
             'pres_up': pres_up,
+            'speed_up': speed_up,
             'salt_ctd_down': salt_ctd_down,
             'salt_ctd_up': salt_ctd_up,
             'valid_length': seq_len
         }
 
-
-def train_model(model, train_loader, val_loader, num_epochs=100, lr=0.001):
-    """
-    Training function for the thermal mass correction model
-    """
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = model.to(device)
-    
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 
-                                                          patience=10, factor=0.5)
-    criterion = ThermalMassLoss()
-    
-    best_val_loss = float('inf')
-    train_losses = []
-    val_losses = []
-    
-    for epoch in range(num_epochs):
-        # Training
-        model.train()
-        train_loss = 0.0
-        
-        for batch in train_loader:
-            input_features = batch['input_features'].to(device)
-            temp_down = batch['temp_down'].to(device)
-            cond_down = batch['cond_down'].to(device)
-            pres_down = batch['pres_down'].to(device)
-            temp_up = batch['temp_up'].to(device)
-            cond_up = batch['cond_up'].to(device)
-            pres_up = batch['pres_up'].to(device)
-            salt_ctd_down = batch['salt_ctd_down'].to(device)
-            salt_ctd_up = batch['salt_ctd_up'].to(device)
-            
-            optimizer.zero_grad()
-            
-            # Forward pass
-            predicted_params = model(input_features)
-            
-            # Compute loss
-            loss = criterion(predicted_params, temp_down, cond_down, pres_down,
-                           temp_up, cond_up, pres_up, salt_ctd_down, salt_ctd_up)
-            
-            loss.backward()
-            optimizer.step()
-            
-            train_loss += loss.item()
-        
-        # Validation
-        model.eval()
-        val_loss = 0.0
-        
-        with torch.no_grad():
-            for batch in val_loader:
-                input_features = batch['input_features'].to(device)
-                temp_down = batch['temp_down'].to(device)
-                cond_down = batch['cond_down'].to(device)
-                pres_down = batch['pres_down'].to(device)
-                temp_up = batch['temp_up'].to(device)
-                cond_up = batch['cond_up'].to(device)
-                pres_up = batch['pres_up'].to(device)
-                salt_ctd_down = batch['salt_ctd_down'].to(device)
-                salt_ctd_up = batch['salt_ctd_up'].to(device)
-                
-                predicted_params = model(input_features)
-                loss = criterion(predicted_params, temp_down, cond_down, pres_down,
-                               temp_up, cond_up, pres_up, salt_ctd_down, salt_ctd_up)
-                
-                val_loss += loss.item()
-        
-        train_loss /= len(train_loader)
-        val_loss /= len(val_loader)
-        
-        train_losses.append(train_loss)
-        val_losses.append(val_loss)
-        
-        print(f'Epoch {epoch+1}/{num_epochs}: Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}')
-        
-        # Learning rate scheduling
-        scheduler.step(val_loss)
-        
-        # Save best model
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            torch.save(model.state_dict(), 'best_thermal_mass_model.pth')
-    
-    return train_losses, val_losses
-
-
-if __name__ == "__main__":
-    # Example usage
-    print("Thermal Mass Correction Neural Network")
-    print("=====================================")
-    
-    # Initialize model
-    model = ThermalMassCorrectionNet(sequence_length=1000, hidden_size=128, num_layers=2)
-    
-    print(f"Model parameters: {sum(p.numel() for p in model.parameters())}")
-    print("Model architecture:")
-    print(model)
-    
-    # Example forward pass
-    batch_size = 4
-    sequence_length = 1000
-    input_features = torch.randn(batch_size, sequence_length, 6)
-    
-    with torch.no_grad():
-        output_params = model(input_features)
-        print(f"Input shape: {input_features.shape}")
-        print(f"Output shape: {output_params.shape}")
-        print(f"Example parameters: {output_params[0]}")

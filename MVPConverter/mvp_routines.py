@@ -41,7 +41,6 @@ from scipy import signal
 import gsw
 from scipy.interpolate import pchip_interpolate
 import similaritymeasures
-from netCDF4 import Dataset
 
 #
 ################################################################################
@@ -166,9 +165,6 @@ def get_log(mvp_log_name,Yorig):
 
 
 
-
-
-
 #
 ################################################################################
 #
@@ -272,64 +268,6 @@ def read_mvp_cycle_raw(mvp_dat_name):
     return pres, soundvel, cond, temp, do, temp2, suna, fluo, turb, ph
 
 
-
-#
-################################################################################
-#
-# Function read_mvp_cycle_ncdf: Read one MVP cycle from a mvp_2022XXX.ncdf file
-#
-#   input:
-#	mvp_dat_name : NetCDF MVP .ncdf file (mvp_2022xxx.ncdf)
-#
-#
-#   output:
-#
-#	pres        : pressure [dbar] 
-#	soundvel    : Sound velocity [m/s]
-#	do          :  dissolved oxygen [umol/kg]
-#	temp2       : Temperature from DO sensor [oC]
-#	suna        :  SUNA data [umol/kg]
-#	fluo        : Fluorometer data [ug/l]
-#	turb        : Turbidity data [NTU]
-#	ph          : pH data [pH units]
-# 
-# 
-################################################################################
-#
-
-def read_mvp_cycle_ncdf(mvp_dat_name):
-
-
-    #print('Reading '+mvp_dat_name)
-
-    # Open the file
-    nc = Dataset(mvp_dat_name, 'r')
-
-    # Read variables
-    pres = nc.variables['PRES'][:]
-    soundvel = nc.variables['SOUNDVEL'][:]
-    cond = nc.variables['COND'][:]
-    temp = nc.variables['TEMP'][:]
-    do = nc.variables['DO'][:]
-    temp2 = nc.variables['TEMP2'][:]
-    suna = nc.variables['SUNA'][:] if 'SUNA' in nc.variables else None
-    fluo = nc.variables['FLUO'][:] if 'FLUO' in nc.variables else None
-    turb = nc.variables['TURB'][:] if 'TURB' in nc.variables else None
-    ph = nc.variables['PH'][:] if 'PH' in nc.variables else None
-
-    nc.close()
-
-    return pres, soundvel, cond, temp, do, temp2, suna, fluo, turb, ph
-
-
-
-
-
-
-
-
-
-
 # ################################################################################
 #
 # Function time_mvp_cycle_up_bgc:
@@ -356,20 +294,27 @@ def read_mvp_cycle_ncdf(mvp_dat_name):
 # ################################################################################
 #
 
-def time_mvp_cycle_up(args,mvp_tstart,mvp_tend):
+def time_mvp_cycle_up(pres,soundvel,cond,temp,do,temp2,suna,fluo,turb,ph,mvp_tstart,mvp_tend):
 
     # Allocate time to each data point
-    N = np.size(args[0])
+    N = np.size(pres)
     time_cycle = np.linspace(mvp_tstart, mvp_tend, N)
 
     # Get only the ascending lines
-    ibot = np.min(np.where(args[0] == args[0].max()))
-    for arg in args:
-        arg = arg[ibot:]
-
+    ibot = np.min(np.where(pres == pres.max()))
+    pres_up = pres[ibot:]
+    soundvel_up = soundvel[ibot:]
+    cond_up = cond[ibot:]
+    temp_up = temp[ibot:]
+    do_up = do[ibot:]
+    temp2_up = temp2[ibot:]
+    suna_up = suna[ibot:] if suna is not None else None
+    fluo_up = fluo[ibot:] if fluo is not None else None
+    turb_up = turb[ibot:] if turb is not None else None
+    ph_up = ph[ibot:] if ph is not None else None
     time_cycle_up = time_cycle[ibot:]
 
-    return args + [time_cycle_up]
+    return pres_up, soundvel_up, cond_up, temp_up, do_up, temp2_up, suna_up, fluo_up, turb_up, ph_up, time_cycle_up
 
 
 # ################################################################################
@@ -396,20 +341,28 @@ def time_mvp_cycle_up(args,mvp_tstart,mvp_tend):
 #     time_cycle_down: Time of each sample in days since Yorig/1/1
 #
 # ################################################################################
-def time_mvp_cycle_down(args, mvp_tstart, mvp_tend):
-
-    N = np.size(args[0])
+def time_mvp_cycle_down(pres, soundvel, cond, temp, do, temp2, suna, fluo, turb, ph, mvp_tstart, mvp_tend):
+    
+    N = np.size(pres)
     time_cycle = np.linspace(mvp_tstart, mvp_tend, N)
 
     # Trouver les indices pour la partie descendante
-    ibot = np.min(np.where(args[0] == args[0].max()))
+    ibot = np.min(np.where(pres == pres.max()))
 
-    for arg in args:
-        arg = arg[:ibot]
+    pres_down = pres[:ibot]
+    soundvel_down = soundvel[:ibot]
+    cond_down = cond[:ibot]
+    temp_down = temp[:ibot]
+    do_down = do[:ibot]
+    temp2_down = temp2[:ibot]
+    suna_down = suna[:ibot] if suna is not None else None
+    fluo_down = fluo[:ibot] if fluo is not None else None
+    turb_down = turb[:ibot] if turb is not None else None
+    ph_down = ph[:ibot] if ph is not None else None
 
     time_cycle_down = time_cycle[:ibot]
 
-    return args + [time_cycle_down]
+    return pres_down, soundvel_down, cond_down, temp_down, do_down, temp2_down, suna_down, fluo_down, turb_down, ph_down, time_cycle_down
 
 
 
