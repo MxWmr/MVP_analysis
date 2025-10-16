@@ -7,8 +7,8 @@ import importlib
 import architecture
 import numpy as np
 importlib.reload(architecture)
-from architecture import ThermalMassDataset,ThermalMassCorrectionNet,ThermalMassLoss
-
+from architecture import ThermalMassDataset,ThermalMassCorrectionNet,ThermalMassLossDebug, ThermalMassCorrectionNetFixed
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 def train_thermal_mass_network(mvp_data, ctd_data, sequence_length=1000, num_epochs=50):
     """
@@ -43,7 +43,7 @@ def train_thermal_mass_network(mvp_data, ctd_data, sequence_length=1000, num_epo
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"Using device: {device}")
         
-        model = ThermalMassCorrectionNet(
+        model = ThermalMassCorrectionNetFixed(
             sequence_length=sequence_length,
             hidden_size=64,  # Smaller network for limited data
             num_layers=1
@@ -52,7 +52,7 @@ def train_thermal_mass_network(mvp_data, ctd_data, sequence_length=1000, num_epo
         # Initialize optimizer and loss function
         optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=10, factor=0.5)
-        criterion = ThermalMassLoss()
+        criterion = ThermalMassLossDebug()
         
         print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
         
@@ -79,10 +79,13 @@ def train_thermal_mass_network(mvp_data, ctd_data, sequence_length=1000, num_epo
                 salt_ctd_down = batch['salt_ctd_down'].to(device)
                 salt_ctd_up = batch['salt_ctd_up'].to(device)
                 
+                # ✅ AJOUT: Récupérer les longueurs de séquences
+                lengths = batch['sequence_length'].to(device)
+                
                 optimizer.zero_grad()
                 
-                # Forward pass
-                predicted_params = model(input_features)
+                # Forward pass avec longueurs
+                predicted_params = model(input_features, lengths=lengths)
                 
                 # Compute loss
                 loss = criterion(predicted_params, temp_down, cond_down, pres_down, speed_down,
@@ -120,7 +123,10 @@ def train_thermal_mass_network(mvp_data, ctd_data, sequence_length=1000, num_epo
                         salt_ctd_down = batch['salt_ctd_down'].to(device)
                         salt_ctd_up = batch['salt_ctd_up'].to(device)
                         
-                        predicted_params = model(input_features)
+                        # ✅ AJOUT: Récupérer les longueurs
+                        lengths = batch['sequence_length'].to(device)
+                        
+                        predicted_params = model(input_features, lengths=lengths)
                         loss = criterion(predicted_params, temp_down, cond_down, pres_down, speed_down,
                                        temp_up, cond_up, pres_up, speed_up, salt_ctd_down, salt_ctd_up)
                         
@@ -151,3 +157,4 @@ def train_thermal_mass_network(mvp_data, ctd_data, sequence_length=1000, num_epo
         import traceback
         traceback.print_exc()
         return None
+

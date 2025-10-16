@@ -747,17 +747,21 @@ class Analyzer:
         self.ctd = True
 
 
-    def compute_waterflow(self,horizontal_speed):
+    def compute_waterflow(self,horizontal_speed,corr=False):
         """
         Compute the water flow speed (u,v) from the horizontal speed and the direction of the profiles.
         Args:
             horizontal_speed (float): Horizontal speed of the boat in cm/s.
         """
         
-
-        SPEED_MVP = np.zeros((self.PRES_mvp.shape[0], self.PRES_mvp.shape[1]))
-        for i in range(self.PRES_mvp.shape[0]):
-            SPEED_MVP[i,:] = np.sqrt(np.gradient(self.PRES_mvp[i,:], 1/self.freq_echant)**2+ horizontal_speed**2)
+        if corr:
+            SPEED_MVP = np.zeros((self.PRES_mvp_corr.shape[0], self.PRES_mvp_corr.shape[1]))
+            for i in range(self.PRES_mvp_corr.shape[0]):
+                SPEED_MVP[i,:] = np.sqrt(np.gradient(self.PRES_mvp_corr[i,:], 1/self.freq_echant)**2+ horizontal_speed**2)
+        else:
+            SPEED_MVP = np.zeros((self.PRES_mvp.shape[0], self.PRES_mvp.shape[1]))
+            for i in range(self.PRES_mvp.shape[0]):
+                SPEED_MVP[i,:] = np.sqrt(np.gradient(self.PRES_mvp[i,:], 1/self.freq_echant)**2+ horizontal_speed**2)
 
         self.SPEED_mvp = SPEED_MVP
         print('Water flow speed computed successfully.')
@@ -1724,6 +1728,38 @@ class Analyzer:
         plt.xlabel('Salinity, psu')
         plt.ylabel('Pressure, dbar')
 
+
+    def interpolate_CTD_and_MVPcorrected(self,length):
+
+        """
+        Interpolate CTD data onto the corrected MVP pressure levels.
+        """
+        if not self.ctd:
+            raise ValueError("CTD data not loaded.")
+
+        if not hasattr(self, 'PRES_mvp_corr'):
+            raise ValueError("Corrected MVP data not available. Apply corrections first.")
+
+        self.TEMP_ctd_on_mvp = np.full(self.PRES_mvp_corr.shape, np.nan)
+        self.PRES_ctd_on_mvp = np.full(self.PRES_mvp_corr.shape, np.nan)
+        self.COND_ctd_on_mvp = np.full(self.PRES_mvp_corr.shape, np.nan)
+        self.SALT_ctd_on_mvp = np.full(self.PRES_mvp_corr.shape, np.nan)
+        self.OXY_ctd_on_mvp = np.full(self.PRES_mvp_corr.shape, np.nan)
+
+        pressure_grid = np.linspace(np.nanmin(self.PRES_mvp_corr), np.nanmax(self.PRES_mvp_corr), length)
+
+        self.TEMP_ctd_on_mvp = mvp.vertical_interp(self.PRES_ctd, self.TEMP_ctd, pressure_grid)
+        self.PRES_ctd_on_mvp = mvp.vertical_interp(self.PRES_ctd, self.PRES_ctd, pressure_grid)
+        self.COND_ctd_on_mvp = mvp.vertical_interp(self.PRES_ctd, self.COND_ctd, pressure_grid)
+        self.SALT_ctd_on_mvp = mvp.vertical_interp(self.PRES_ctd, self.SALT_ctd, pressure_grid)
+        self.OXY_ctd_on_mvp = mvp.vertical_interp(self.PRES_ctd, self.OXY_ctd, pressure_grid)
+        self.TEMP_mvp_corr_interp = mvp.vertical_interp(self.PRES_mvp_corr, self.TEMP_mvp_corr, pressure_grid)
+        self.PRES_mvp_corr_interp = mvp.vertical_interp(self.PRES_mvp_corr, self.PRES_mvp_corr, pressure_grid)
+        self.COND_mvp_corr_interp = mvp.vertical_interp(self.PRES_mvp_corr, self.COND_mvp_corr, pressure_grid)
+        self.SALT_mvp_corr_interp = mvp.vertical_interp(self.PRES_mvp_corr, self.SALT_mvp_corr, pressure_grid)
+        self.SPEED_mvp_corr_interp = mvp.vertical_interp(self.PRES_mvp_corr, self.SPEED_mvp, pressure_grid)
+
+        print('CTD data interpolated onto corrected MVP pressure levels.')
 
 
     def to_netcdf(self, filepath=None, corrected=False, compression=True, engine=None, per_profile_files=False):

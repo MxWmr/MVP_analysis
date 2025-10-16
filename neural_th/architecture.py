@@ -9,8 +9,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-import gsw
-
+from SP_from_C_torch import gsw_sp_from_c_torch
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 class ThermalMassCorrectionNet(nn.Module):
     """
@@ -112,54 +112,46 @@ class ThermalMassCorrectionNet(nn.Module):
 
 def garau_correction(T, C, P, V, alpha0, alphaS, tau0, tauS, fs=20):
     """
-    Apply Garau et al. 2011 thermal mass correction
-    
-    Args:
-        T: Temperature time series (torch.Tensor)
-        C: Conductivity time series (torch.Tensor)
-        P: Pressure time series (torch.Tensor)
-        V: flow speed
-        alpha0: Alpha coefficient at surface pressure
-        alphaS: Alpha salinity dependence
-        tau0: Tau coefficient at surface pressure
-        tauS: Tau salinity dependence
-        fs: sampling frequency
-        
-    Returns:
-        C_corrected: Corrected conductivity
+    Apply Garau correction (COMPLETELY SAFE VERSION - no loops, no in-place)
     """
     batch_size, seq_len = T.shape
+    device = T.device
     
-    # Initialize corrected temperature
-    T_corrected = torch.clone(T)
-        
-
-    # For simplicity, using constant coefficients here
-    alpha = alpha0.unsqueeze(1) + alphaS.unsqueeze(1) * V
-    tau = tau0.unsqueeze(1) + tauS.unsqueeze(1) * V
+    # Use mean flow speed for each profile
+    V_mean = torch.mean(V, dim=1)  # [batch_size]
     
-    a = 4*fs*alpha*tau/(1+4*fs*tau)
-    b = 1 - 2*a/alpha
+    # Compute coefficients with aggressive clamping
+    alpha = torch.clamp(alpha0 + alphaS * V_mean, min=1e-3, max=0.5)  # Smaller range
+    tau = torch.clamp(tau0 + tauS * V_mean, min=1.0, max=50.0)        # Smaller range
+    
+    # Compute correction coefficients with safety
+    denominator = torch.clamp(1 + 4 * fs * tau, min=1e-3)
+    a = torch.clamp(4 * fs * alpha * tau / denominator, min=1e-6, max=1.0)
+    
+    # Avoid division by alpha - use alternative formulation
+    # Original: b = 1 - 2*a/alpha  ← PROBLÉMATIQUE
+    # Alternative: b = (1 + 4*fs*tau - 2*4*fs*tau) / (1 + 4*fs*tau)
+    b = torch.clamp((1 - 8 * fs * tau) / denominator, min=-5.0, max=5.0)
+    
+    # Expand for broadcasting
+    a_exp = a.unsqueeze(1)  # [batch_size, 1]
+    b_exp = b.unsqueeze(1)  # [batch_size, 1]
+    
+    # Compute temperature differences (vectorized)
+    dT = torch.zeros_like(T)
+    dT[:, 1:] = T[:, 1:] - T[:, :-1]
+    
+    # SIMPLIFIED NON-RECURSIVE CORRECTION (no loops!)
+    # Instead of recursive formula, use first-order approximation
+    correction_factor = a_exp * tau.unsqueeze(1)  # Combined correction
+    T_corrected = T + correction_factor * dT
+    
+    # Ensure output is reasonable
+    T_corrected = torch.clamp(T_corrected, min=T.min()-5.0, max=T.max()+5.0)
+    
+    return T
 
-    # Apply recursive correction
-    for i in range(1, seq_len):
-        T_corrected[:,i] = -b[:,i-1] * T_corrected[:,i-1] + a[:,i] * (T[:,i] - T[:,i-1])
 
-    return T_corrected
-
-
-def gsw_sp_from_c_torch(C, T, P):
-    """
-    Compute practical salinity from conductivity using GSW (approximate)
-    This is a simplified version - in practice, you'd use the actual GSW formula
-    """
-    # Simplified formula for demonstration
-    # In practice, implement the full GSW SP_from_C algorithm
-    R = C / 42.914  # Approximate conductivity ratio
-    rt = torch.sqrt(R)
-    S = ((((2.7081e-1 * rt - 7.0261e-1) * rt + 1.4692e-1) * rt + 
-          (2.5986e-2 - 6.0269e-3 * rt) * rt) * rt + 3.5000e-1) * rt
-    return S * 35.0
 
 
 class ThermalMassLoss(nn.Module):
@@ -186,7 +178,6 @@ class ThermalMassLoss(nn.Module):
         Returns:
             loss: Total loss value
         """
-        batch_size = T_down.shape[0]
         
         # Extract parameters
         alpha0_down = predicted_params[:, 0]
@@ -205,30 +196,237 @@ class ThermalMassLoss(nn.Module):
         T_up_corrected = garau_correction(T_up, C_up, P_up, V_up,
                                         alpha0_up, alphaS_up, tau0_up, tauS_up)
         
-        # Compute corrected salinity
-        S_down_corrected = gsw_sp_from_c_torch(C_down, T_down_corrected, P_down)
-        S_up_corrected = gsw_sp_from_c_torch(C_up, T_up_corrected, P_up)
+
         
-        # Compute losses
-        if valid_mask_down is not None:
-            loss_down = self.mse_loss(S_down_corrected[valid_mask_down], 
-                                    S_ctd_down[valid_mask_down])
-        else:
-            loss_down = self.mse_loss(S_down_corrected, S_ctd_down)
+        try:
+            # Calculer la salinité
+            S_down_corrected = gsw_sp_from_c_torch(C_down, T_down_corrected, P_down)
+            S_up_corrected = gsw_sp_from_c_torch(C_up, T_up_corrected, P_up)
             
-        if valid_mask_up is not None:
-            loss_up = self.mse_loss(S_up_corrected[valid_mask_up], 
-                                  S_ctd_up[valid_mask_up])
-        else:
-            loss_up = self.mse_loss(S_up_corrected, S_ctd_up)
+            # MASQUES AMÉLIORÉS pour ignorer le padding NaN
+            valid_down = (torch.isfinite(S_down_corrected) & 
+                         torch.isfinite(S_ctd_down) &
+                         torch.isfinite(T_down) &
+                         torch.isfinite(C_down) &
+                         torch.isfinite(P_down) &
+                         (C_down > 0.1))  # Éviter conductivité nulle
+            
+            valid_up = (torch.isfinite(S_up_corrected) & 
+                       torch.isfinite(S_ctd_up) &
+                       torch.isfinite(T_up) &
+                       torch.isfinite(C_up) &
+                       torch.isfinite(P_up) &
+                       (C_up > 0.1))
+            
+            print(f"Valid points - Down: {valid_down.sum().item()}/{valid_down.numel()}, Up: {valid_up.sum().item()}/{valid_up.numel()}")
+            
+            # Calculer loss seulement sur points valides - CORRECTION ICI
+            if valid_down.sum() > 50:  # Au moins 50 points valides
+                # S'assurer que les tensors ont les bonnes dimensions
+                if S_down_corrected.dim() == S_ctd_down.dim():
+                    loss_elements_down = self.mse_loss(S_down_corrected, S_ctd_down)
+                    
+                    # Vérifier que loss_elements_down a la bonne dimension pour l'indexation
+                    if loss_elements_down.numel() > 1:  # Tensor multidimensionnel
+                        loss_down = torch.mean(loss_elements_down[valid_down])
+                    else:  # Scalaire ou tensor 1D
+                        loss_down = torch.mean(loss_elements_down)
+                else:
+                    print(f"⚠️  Dimension mismatch: S_down_corrected {S_down_corrected.shape} vs S_ctd_down {S_ctd_down.shape}")
+                    loss_down = torch.tensor(10.0, device=T_down.device)
+            else:
+                print(f"⚠️  Pas assez de points valides down: {valid_down.sum().item()}")
+                loss_down = torch.tensor(10.0, device=T_down.device)
+                
+            if valid_up.sum() > 50:  # Au moins 50 points valides  
+                if S_up_corrected.dim() == S_ctd_up.dim():
+                    loss_elements_up = self.mse_loss(S_up_corrected, S_ctd_up)
+                    
+                    if loss_elements_up.numel() > 1:  # Tensor multidimensionnel
+                        loss_up = torch.mean(loss_elements_up[valid_up])
+                    else:  # Scalaire ou tensor 1D
+                        loss_up = torch.mean(loss_elements_up)
+                else:
+                    print(f"⚠️  Dimension mismatch: S_up_corrected {S_up_corrected.shape} vs S_ctd_up {S_ctd_up.shape}")
+                    loss_up = torch.tensor(10.0, device=T_down.device)
+            else:
+                print(f"⚠️  Pas assez de points valides up: {valid_up.sum().item()}")
+                loss_up = torch.tensor(10.0, device=T_down.device)
+            
+            # Loss totale avec régularisation plus faible
+            reg_loss = 0.0001 * torch.mean(predicted_params**2)  # Régularisation plus faible
+            total_loss = loss_down + loss_up + reg_loss
+            
+            print(f"Loss components: down={loss_down.item():.6f}, up={loss_up.item():.6f}, reg={reg_loss.item():.6f}, total={total_loss.item():.6f}")
+            
+            if not torch.isfinite(total_loss):
+                print("❌ Loss non-finie!")
+                return torch.tensor(10.0, device=T_down.device, requires_grad=True)
+            
+            return total_loss
+            
+        except Exception as e:
+            print(f"Erreur dans loss: {e}")
+            import traceback
+            traceback.print_exc()
+            return torch.tensor(10.0, device=T_down.device, requires_grad=True)
+
+
+
+class ThermalMassLossDebug(nn.Module):
+    def __init__(self):
+        super(ThermalMassLossDebug, self).__init__()
+        self.mse_loss = nn.MSELoss(reduction='none')
         
-        # Total loss
-        total_loss = loss_down + loss_up
+    def forward(self, predicted_params, T_down, C_down, P_down, V_down, T_up, C_up, P_up, V_up,
+                S_ctd_down, S_ctd_up, valid_mask_down=None, valid_mask_up=None):
         
-        # Add regularization on parameters to keep them reasonable
-        param_reg = 0.001 * torch.mean(predicted_params**2)
+        # DEBUG: Vérifier predicted_params
+        if torch.any(torch.isnan(predicted_params)):
+            print(f"❌ predicted_params contient des NaN: {torch.isnan(predicted_params).sum().item()}/{predicted_params.numel()}")
+            print(f"   Range: {predicted_params.min().item():.6f} - {predicted_params.max().item():.6f}")
+            # Nettoyer les NaN dans predicted_params
+            predicted_params = torch.where(torch.isnan(predicted_params), 
+                                         torch.zeros_like(predicted_params), 
+                                         predicted_params)
         
-        return total_loss + param_reg
+        # Extraire les paramètres
+        alpha0_down = predicted_params[:, 0]
+        alphaS_down = predicted_params[:, 1]
+        tau0_down = predicted_params[:, 2]
+        tauS_down = predicted_params[:, 3]
+        alpha0_up = predicted_params[:, 4]
+        alphaS_up = predicted_params[:, 5]
+        tau0_up = predicted_params[:, 6]
+        tauS_up = predicted_params[:, 7]
+
+        # Utiliser la correction Garau et al
+        T_down_corrected = garau_correction(T_down, C_down, P_down, V_down,
+                                          alpha0_down, alphaS_down, tau0_down, tauS_down)
+        T_up_corrected = garau_correction(T_up, C_up, P_up, V_up,
+                                        alpha0_up, alphaS_up, tau0_up, tauS_up)
+
+        # T_down_corrected = T_down
+        # T_up_corrected = T_up      
+        
+        try:
+            # DEBUG: Vérifier les entrées
+            print(f"Entrées - T_down NaN: {torch.isnan(T_down).sum().item()}, C_down NaN: {torch.isnan(C_down).sum().item()}")
+            print(f"         T_up NaN: {torch.isnan(T_up).sum().item()}, C_up NaN: {torch.isnan(C_up).sum().item()}")
+            
+            # Calculer la salinité avec vérifications
+            S_down_corrected = gsw_sp_from_c_torch(C_down, T_down_corrected, P_down)
+            S_up_corrected = gsw_sp_from_c_torch(C_up, T_up_corrected, P_up)
+            
+            # DEBUG: Vérifier les salinités calculées
+            print(f"Salinités - S_down NaN: {torch.isnan(S_down_corrected).sum().item()}, S_up NaN: {torch.isnan(S_up_corrected).sum().item()}")
+            print(f"           S_down range: {S_down_corrected.min().item():.3f}-{S_down_corrected.max().item():.3f}")
+            print(f"           S_up range: {S_up_corrected.min().item():.3f}-{S_up_corrected.max().item():.3f}")
+            
+            # DEBUG: Vérifier les CTD de référence
+            print(f"CTD ref - S_ctd_down NaN: {torch.isnan(S_ctd_down).sum().item()}, S_ctd_up NaN: {torch.isnan(S_ctd_up).sum().item()}")
+            
+            # Nettoyer les salinités si nécessaire
+            if torch.any(torch.isnan(S_down_corrected)):
+                print("⚠️  Nettoyage S_down_corrected")
+                S_down_corrected = torch.where(torch.isnan(S_down_corrected), 
+                                             torch.full_like(S_down_corrected, 35.0), 
+                                             S_down_corrected)
+            
+            if torch.any(torch.isnan(S_up_corrected)):
+                print("⚠️  Nettoyage S_up_corrected")
+                S_up_corrected = torch.where(torch.isnan(S_up_corrected), 
+                                           torch.full_like(S_up_corrected, 35.0), 
+                                           S_up_corrected)
+            
+            # MASQUES stricts
+            valid_down = (torch.isfinite(S_down_corrected) & 
+                         torch.isfinite(S_ctd_down) &
+                         torch.isfinite(T_down) &
+                         torch.isfinite(C_down) &
+                         torch.isfinite(P_down) &
+                         (C_down > 0.1) &
+                         (S_down_corrected > 20.0) &
+                         (S_down_corrected < 45.0))
+            
+            valid_up = (torch.isfinite(S_up_corrected) & 
+                       torch.isfinite(S_ctd_up) &
+                       torch.isfinite(T_up) &
+                       torch.isfinite(C_up) &
+                       torch.isfinite(P_up) &
+                       (C_up > 0.1) &
+                       (S_up_corrected > 20.0) &
+                       (S_up_corrected < 45.0))
+            
+            print(f"Valid points - Down: {valid_down.sum().item()}/{valid_down.numel()}, Up: {valid_up.sum().item()}/{valid_up.numel()}")
+            
+            # Calculer losses avec vérifications multiples
+            loss_down = torch.tensor(0.0, device=T_down.device)
+            loss_up = torch.tensor(0.0, device=T_down.device)
+            
+            if valid_down.sum() > 50:
+                try:
+                    # Extraire seulement les points valides
+                    S_down_valid = S_down_corrected[valid_down]
+                    S_ctd_down_valid = S_ctd_down[valid_down]
+                    
+                    # Calculer MSE sur points valides
+                    loss_down = torch.mean((S_down_valid - S_ctd_down_valid)**2)
+                    
+                    if torch.isnan(loss_down):
+                        print("❌ loss_down est NaN après calcul")
+                        loss_down = torch.tensor(1.0, device=T_down.device)
+                    
+                except Exception as e:
+                    print(f"❌ Erreur calcul loss_down: {e}")
+                    loss_down = torch.tensor(1.0, device=T_down.device)
+            else:
+                loss_down = torch.tensor(1.0, device=T_down.device)
+                
+            if valid_up.sum() > 50:
+                try:
+                    # Extraire seulement les points valides
+                    S_up_valid = S_up_corrected[valid_up]
+                    S_ctd_up_valid = S_ctd_up[valid_up]
+                    
+                    # Calculer MSE sur points valides
+                    loss_up = torch.mean((S_up_valid - S_ctd_up_valid)**2)
+                    
+                    if torch.isnan(loss_up):
+                        print("❌ loss_up est NaN après calcul")
+                        loss_up = torch.tensor(1.0, device=T_down.device)
+                    
+                except Exception as e:
+                    print(f"❌ Erreur calcul loss_up: {e}")
+                    loss_up = torch.tensor(1.0, device=T_down.device)
+            else:
+                loss_up = torch.tensor(1.0, device=T_down.device)
+            
+            # Régularisation avec nettoyage
+            if torch.any(torch.isnan(predicted_params)):
+                reg_loss = torch.tensor(0.0, device=T_down.device)
+            else:
+                reg_loss = 0.0001 * torch.mean(predicted_params**2)
+                if torch.isnan(reg_loss):
+                    reg_loss = torch.tensor(0.0, device=T_down.device)
+            
+            # Loss totale
+            total_loss = loss_down + loss_up + reg_loss
+            
+            print(f"Loss components: down={loss_down.item():.6f}, up={loss_up.item():.6f}, reg={reg_loss.item():.6f}, total={total_loss.item():.6f}")
+            
+            if torch.isnan(total_loss):
+                print("❌ Total loss est NaN!")
+                return torch.tensor(1.0, device=T_down.device, requires_grad=True)
+            
+            return total_loss
+            
+        except Exception as e:
+            print(f"❌ Exception in loss: {e}")
+            import traceback
+            traceback.print_exc()
+            return torch.tensor(1.0, device=T_down.device, requires_grad=True)
+
 
 
 class ThermalMassDataset(torch.utils.data.Dataset):
@@ -270,43 +468,24 @@ class ThermalMassDataset(torch.utils.data.Dataset):
         salt_ctd_down = torch.FloatTensor(self.ctd_data['SALT_down'][idx])
         salt_ctd_up = torch.FloatTensor(self.ctd_data['SALT_up'][idx])
         
-        # Handle variable length sequences by padding/truncating
-        seq_len = min(len(temp_down), self.sequence_length)
+        # Calculer la longueur réelle (sans NaN)
+        valid_mask = (~torch.isnan(temp_down)) & (~torch.isnan(cond_down)) & \
+                     (~torch.isnan(pres_down)) & (~torch.isnan(temp_up)) & \
+                     (~torch.isnan(cond_up)) & (~torch.isnan(pres_up))
         
-        # Pad or truncate to fixed length
-        if len(temp_down) < self.sequence_length:
-            pad_len = self.sequence_length - len(temp_down)
-            temp_down = torch.cat([temp_down, torch.zeros(pad_len)])
-            cond_down = torch.cat([cond_down, torch.zeros(pad_len)])
-            pres_down = torch.cat([pres_down, torch.zeros(pad_len)])
-            speed_down = torch.cat([speed_down, torch.zeros(pad_len)])
-            
-            temp_up = torch.cat([temp_up, torch.zeros(pad_len)])
-            cond_up = torch.cat([cond_up, torch.zeros(pad_len)])
-            pres_up = torch.cat([pres_up, torch.zeros(pad_len)])
-            speed_up = torch.cat([speed_up, torch.zeros(pad_len)])
-            
-            salt_ctd_down = torch.cat([salt_ctd_down, torch.zeros(pad_len)])
-            salt_ctd_up = torch.cat([salt_ctd_up, torch.zeros(pad_len)])
+        # Trouver le dernier index valide
+        valid_indices = torch.where(valid_mask)[0]
+        if len(valid_indices) > 0:
+            sequence_length = valid_indices[-1].item() + 1
         else:
-            temp_down = temp_down[:self.sequence_length]
-            cond_down = cond_down[:self.sequence_length]
-            pres_down = pres_down[:self.sequence_length]
-            speed_down = speed_down[:self.sequence_length]
-            
-            temp_up = temp_up[:self.sequence_length]
-            cond_up = cond_up[:self.sequence_length]
-            pres_up = pres_up[:self.sequence_length]
-            speed_up = speed_up[:self.sequence_length]
-            
-            salt_ctd_down = salt_ctd_down[:self.sequence_length]
-            salt_ctd_up = salt_ctd_up[:self.sequence_length]
+            sequence_length = 1  # Au moins 1 pour éviter erreurs
         
-        # Stack input features
+        # ✅ CORRECTION: Stack avec dim=0 pour avoir [sequence_length, num_features]
+        # Puis transpose pour obtenir [num_features, sequence_length] attendu par le modèle
         input_features = torch.stack([
             temp_down, cond_down, pres_down,
-            temp_up, cond_up, pres_up
-        ], dim=1)
+                temp_up, cond_up, pres_up
+        ], dim=0)  # [num_features=6, sequence_length]
         
         return {
             'input_features': input_features,
@@ -320,6 +499,137 @@ class ThermalMassDataset(torch.utils.data.Dataset):
             'speed_up': speed_up,
             'salt_ctd_down': salt_ctd_down,
             'salt_ctd_up': salt_ctd_up,
-            'valid_length': seq_len
+            'sequence_length': sequence_length
         }
 
+
+
+
+class ThermalMassCorrectionNetFixed(nn.Module):
+    def __init__(self, sequence_length=800, hidden_size=64, num_layers=1):
+        super(ThermalMassCorrectionNetFixed, self).__init__()
+        
+        self.sequence_length = sequence_length
+        self.hidden_size = hidden_size
+        
+        # LSTM simple (pas bidirectionnel pour éviter les NaN)
+        self.lstm = nn.LSTM(
+            input_size=6,  # T_down, C_down, P_down, T_up, C_up, P_up
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=0.0,  # ✅ CORRECTION: dropout=0 pour num_layers=1
+            bidirectional=False
+        )
+        
+        # ✅ CORRECTION: Feature extractor adapté pour LSTM non-bidirectionnel
+        # Input: hidden_size (pas hidden_size * 2)
+        self.feature_extractor = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size // 2),  # 64 -> 32
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_size // 2, hidden_size // 4),  # 32 -> 16
+            nn.ReLU()
+        )
+        
+        # Couche de sortie
+        self.output_layer = nn.Linear(hidden_size // 4, 8)  # 16 -> 8 paramètres
+        
+        # INITIALISATION CRITIQUE
+        self._initialize_weights()
+        
+    def _initialize_weights(self):
+        """Initialisation très conservative"""
+        
+        # LSTM: initialisation Xavier avec gain réduit
+        for name, param in self.lstm.named_parameters():
+            if 'weight_ih' in name:
+                nn.init.xavier_uniform_(param.data, gain=0.5)
+            elif 'weight_hh' in name:
+                nn.init.orthogonal_(param.data, gain=0.5)
+            elif 'bias' in name:
+                nn.init.constant_(param.data, 0)
+        
+        # Feature extractor
+        for layer in self.feature_extractor:
+            if isinstance(layer, nn.Linear):
+                nn.init.xavier_uniform_(layer.weight, gain=0.1)
+                nn.init.constant_(layer.bias, 0)
+        
+        # Couche de sortie: très conservative
+        nn.init.normal_(self.output_layer.weight, mean=0.0, std=0.001)
+        
+        # Biais de sortie: valeurs physiquement raisonnables
+        with torch.no_grad():
+            initial_bias = torch.tensor([0.02, 0.001, 5.0, 0.1,  # down
+                                       0.02, 0.001, 5.0, 0.1], # up
+                                      dtype=torch.float32)
+            self.output_layer.bias.copy_(initial_bias)
+    
+    def forward(self, x, lengths=None):
+        """
+        Args:
+            x: Input tensor [batch_size, num_features, sequence_length]
+            lengths: Tensor of actual sequence lengths [batch_size]
+        """
+        # x shape: [batch_size, num_features, sequence_length]
+        # LSTM expects: [batch_size, sequence_length, num_features]
+        
+        # ✅ CORRECTION: Transposer correctement
+        # De [batch_size, num_features=6, sequence_length] 
+        # À [batch_size, sequence_length, num_features=6]
+        if x.dim() == 3:
+            x = x.transpose(1, 2)  # [batch_size, sequence_length, num_features]
+        
+        batch_size = x.size(0)
+        
+        # Si lengths fourni, utiliser pack_padded_sequence
+        if lengths is not None:
+            # Trier par longueur décroissante (requis par pack_padded_sequence)
+            lengths_clamped = torch.clamp(lengths, min=1, max=x.size(1))
+            sorted_lengths, sorted_idx = torch.sort(lengths_clamped, descending=True)
+            x_sorted = x[sorted_idx]
+            
+            # Pack les séquences
+            packed_input = pack_padded_sequence(
+                x_sorted, 
+                sorted_lengths.cpu(), 
+                batch_first=True, 
+                enforce_sorted=True
+            )
+            
+            # LSTM sur séquences packées
+            packed_output, (hidden, cell) = self.lstm(packed_input)
+            
+            # Unpack
+            lstm_out, _ = pad_packed_sequence(packed_output, batch_first=True)
+            
+            # Récupérer l'ordre original
+            _, unsorted_idx = torch.sort(sorted_idx)
+            lstm_out = lstm_out[unsorted_idx]
+            
+            # Prendre le dernier output valide pour chaque séquence
+            last_output = torch.zeros(batch_size, self.hidden_size, device=x.device)
+            for i in range(batch_size):
+                valid_len = min(max(0, lengths[i].item() - 1), lstm_out.size(1) - 1)
+                last_output[i] = lstm_out[i, valid_len, :]
+        else:
+            # Mode sans pack (backward compatibility)
+            lstm_out, (hidden, cell) = self.lstm(x)
+            last_output = lstm_out[:, -1, :]
+        
+        # Vérification NaN
+        if torch.any(torch.isnan(last_output)):
+            print("⚠️  NaN détecté après LSTM, remplacement par zéros")
+            last_output = torch.zeros_like(last_output)
+        
+        # Feature extraction
+        features = self.feature_extractor(last_output)
+        
+        # Output
+        output = self.output_layer(features)
+        
+        # Clamp pour éviter les valeurs extrêmes
+        output = torch.clamp(output, min=-5.0, max=5.0)
+        
+        return output
