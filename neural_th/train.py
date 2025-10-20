@@ -1,4 +1,5 @@
 #Initialize and train the neural network
+import time
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -7,10 +8,10 @@ import importlib
 import architecture
 import numpy as np
 importlib.reload(architecture)
-from architecture import ThermalMassDataset,ThermalMassCorrectionNet,ThermalMassLossDebug, ThermalMassCorrectionNetFixed
-from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+from architecture import ThermalMassDataset,ThermalMassLoss, ThermalMassCorrectionNetFixed
+from utils import collate_variable_length
 
-def train_thermal_mass_network(mvp_data, ctd_data, sequence_length=1000, num_epochs=50):
+def train_thermal_mass_network(mvp_data, ctd_data, num_epochs=50):
     """
     Train the thermal mass correction neural network
     """
@@ -24,7 +25,7 @@ def train_thermal_mass_network(mvp_data, ctd_data, sequence_length=1000, num_epo
         print(f"Training neural network with {n_pairs} profile pairs...")
         
         # Create dataset
-        dataset = ThermalMassDataset(mvp_data, ctd_data, sequence_length=sequence_length)
+        dataset = ThermalMassDataset(mvp_data, ctd_data)
         
         # Split into train/validation (80/20 split)
         train_size = max(1, int(0.8 * len(dataset)))
@@ -36,15 +37,27 @@ def train_thermal_mass_network(mvp_data, ctd_data, sequence_length=1000, num_epo
         
         # Create data loaders
         batch_size = min(2, train_size)  # Small batch size for limited data
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False) if val_size > 0 else None
-        
+        # Créer le DataLoader avec le collate_fn personnalisé
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            collate_fn=collate_variable_length,  
+            num_workers=0  # Mettre 0 pour debug, augmenter après
+        )
+
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            collate_fn=collate_variable_length,  
+            num_workers=0
+)
         # Initialize model
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"Using device: {device}")
         
         model = ThermalMassCorrectionNetFixed(
-            sequence_length=sequence_length,
             hidden_size=64,  # Smaller network for limited data
             num_layers=1
         ).to(device)
@@ -52,7 +65,7 @@ def train_thermal_mass_network(mvp_data, ctd_data, sequence_length=1000, num_epo
         # Initialize optimizer and loss function
         optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=10, factor=0.5)
-        criterion = ThermalMassLossDebug()
+        criterion = ThermalMassLoss()
         
         print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
         
@@ -68,29 +81,32 @@ def train_thermal_mass_network(mvp_data, ctd_data, sequence_length=1000, num_epo
             for batch_idx, batch in enumerate(train_loader):
                 # Move data to device
                 input_features = batch['input_features'].to(device)
+                sequence_lengths = batch['sequence_lengths'].to(device)
+
                 temp_down = batch['temp_down'].to(device)
                 cond_down = batch['cond_down'].to(device)
                 pres_down = batch['pres_down'].to(device)
                 speed_down = batch['speed_down'].to(device)
+                time_down = batch['time_down'].to(device)
+
                 temp_up = batch['temp_up'].to(device)
                 cond_up = batch['cond_up'].to(device)
                 pres_up = batch['pres_up'].to(device)
                 speed_up = batch['speed_up'].to(device)
+                time_up = batch['time_up'].to(device)
+
                 salt_ctd_down = batch['salt_ctd_down'].to(device)
                 salt_ctd_up = batch['salt_ctd_up'].to(device)
-                
-                # ✅ AJOUT: Récupérer les longueurs de séquences
-                lengths = batch['sequence_length'].to(device)
-                
+                 
                 optimizer.zero_grad()
                 
                 # Forward pass avec longueurs
-                predicted_params = model(input_features, lengths=lengths)
+                predicted_params = model(input_features, lengths=sequence_lengths)
                 
                 # Compute loss
-                loss = criterion(predicted_params, temp_down, cond_down, pres_down, speed_down,
-                               temp_up, cond_up, pres_up, speed_up, salt_ctd_down, salt_ctd_up)
-                
+                loss = criterion(predicted_params, temp_down, cond_down, pres_down, speed_down, time_down,
+                                 temp_up, cond_up, pres_up, speed_up, time_up, salt_ctd_down, salt_ctd_up)
+
                 # Backward pass
                 loss.backward()
                 
@@ -112,24 +128,27 @@ def train_thermal_mass_network(mvp_data, ctd_data, sequence_length=1000, num_epo
                 with torch.no_grad():
                     for batch in val_loader:
                         input_features = batch['input_features'].to(device)
+                        sequence_lengths = batch['sequence_lengths'].to(device)
+
                         temp_down = batch['temp_down'].to(device)
                         cond_down = batch['cond_down'].to(device)
                         pres_down = batch['pres_down'].to(device)
                         speed_down = batch['speed_down'].to(device)
+                        time_down = batch['time_down'].to(device)
+
                         temp_up = batch['temp_up'].to(device)
                         cond_up = batch['cond_up'].to(device)
                         pres_up = batch['pres_up'].to(device)
                         speed_up = batch['speed_up'].to(device)
+                        time_up = batch['time_up'].to(device)
+
                         salt_ctd_down = batch['salt_ctd_down'].to(device)
                         salt_ctd_up = batch['salt_ctd_up'].to(device)
-                        
-                        # ✅ AJOUT: Récupérer les longueurs
-                        lengths = batch['sequence_length'].to(device)
-                        
-                        predicted_params = model(input_features, lengths=lengths)
-                        loss = criterion(predicted_params, temp_down, cond_down, pres_down, speed_down,
-                                       temp_up, cond_up, pres_up, speed_up, salt_ctd_down, salt_ctd_up)
-                        
+
+                        predicted_params = model(input_features, lengths=sequence_lengths)
+                        loss = criterion(predicted_params, temp_down, cond_down, pres_down, speed_down, time_down,
+                                         temp_up, cond_up, pres_up, speed_up, time_up, salt_ctd_down, salt_ctd_up)
+
                         epoch_val_loss += loss.item()
                 
                 avg_val_loss = epoch_val_loss / len(val_loader)
@@ -142,9 +161,9 @@ def train_thermal_mass_network(mvp_data, ctd_data, sequence_length=1000, num_epo
                 scheduler.step(avg_train_loss)
             
             # Early stopping check
-            if len(train_losses) > 10 and avg_train_loss > np.mean(train_losses[-10:]) * 1.1:
-                print("Early stopping: loss not improving")
-                break
+            # if len(train_losses) > 10 and avg_train_loss > np.mean(train_losses[-10:]) * 1.1:
+            #     print("Early stopping: loss not improving")
+            #     break
         
         # Save trained model
         torch.save(model.state_dict(), 'thermal_mass_model.pth')

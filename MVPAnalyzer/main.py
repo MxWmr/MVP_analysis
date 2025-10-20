@@ -1758,6 +1758,7 @@ class Analyzer:
         self.COND_mvp_corr_interp = mvp.vertical_interp(self.PRES_mvp_corr, self.COND_mvp_corr, pressure_grid)
         self.SALT_mvp_corr_interp = mvp.vertical_interp(self.PRES_mvp_corr, self.SALT_mvp_corr, pressure_grid)
         self.SPEED_mvp_corr_interp = mvp.vertical_interp(self.PRES_mvp_corr, self.SPEED_mvp, pressure_grid)
+        self.TIME_mvp_corr_interp = mvp.vertical_interp(self.PRES_mvp_corr, self.TIME_mvp_corr, pressure_grid)
 
         print('CTD data interpolated onto corrected MVP pressure levels.')
 

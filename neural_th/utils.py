@@ -1,6 +1,10 @@
 # Prepare data for neural network training
+import time
 import gsw
 import numpy as np
+import torch
+from torch.nn.utils.rnn import pad_sequence
+
 
 def prepare_training_data(mvpa, min_points=500):
     """
@@ -11,11 +15,13 @@ def prepare_training_data(mvpa, min_points=500):
         'COND_down': [],
         'PRES_down': [],
         'SPEED_down': [],
+        'TIME_down': [],
         'TEMP_up': [],
         'COND_up': [], 
         'PRES_up': [],
-        'SPEED_up': []
-    }
+        'SPEED_up': [],
+        'TIME_up': []
+    }   
     
     ctd_data = {
         'SALT_down': [],
@@ -38,11 +44,13 @@ def prepare_training_data(mvpa, min_points=500):
         cond_down = mvpa.COND_mvp_corr_interp[down_idx] 
         pres_down = mvpa.PRES_mvp_corr_interp[down_idx]
         speed_down = mvpa.SPEED_mvp_corr_interp[down_idx]
+        time_down = mvpa.TIME_mvp_corr_interp[down_idx]
         
         temp_up = mvpa.TEMP_mvp_corr_interp[up_idx]
         cond_up = mvpa.COND_mvp_corr_interp[up_idx]
         pres_up = mvpa.PRES_mvp_corr_interp[up_idx]
         speed_up = mvpa.SPEED_mvp_corr_interp[up_idx]
+        time_up = mvpa.TIME_mvp_corr_interp[up_idx]
         
         # Check if profiles have enough valid data
         valid_down = (~np.isnan(temp_down)) & (~np.isnan(cond_down)) & (~np.isnan(pres_down)) & (~np.isnan(speed_down))
@@ -60,11 +68,13 @@ def prepare_training_data(mvpa, min_points=500):
         mvp_data['COND_down'].append(cond_down)
         mvp_data['PRES_down'].append(pres_down)
         mvp_data['SPEED_down'].append(speed_down)
+        mvp_data['TIME_down'].append(time_down)
         
         mvp_data['TEMP_up'].append(temp_up)
         mvp_data['COND_up'].append(cond_up)
         mvp_data['PRES_up'].append(pres_up)
         mvp_data['SPEED_up'].append(speed_up)
+        mvp_data['TIME_up'].append(time_up)
         
         # Get or compute CTD reference salinity
         if hasattr(mvpa, 'SALT_ctd') and len(mvpa.SALT_ctd) > up_idx:
@@ -191,3 +201,33 @@ def garau_correction_nograd(T, C, P, V, alpha0, alphaS, tau0, tauS, fs=20):
     
     return T_corrected
 
+
+def collate_variable_length(batch):
+    """
+    Version ultra-simple avec pad_sequence
+    """
+    # Extraire sequence_lengths
+    sequence_lengths = torch.tensor([item['sequence_length'] for item in batch])
+    
+    # Clés à padder (toutes sauf sequence_length)
+    keys_to_pad = ['temp_down', 'cond_down', 'pres_down', 'speed_down','time_down',
+                   'temp_up', 'cond_up', 'pres_up', 'speed_up','time_up',
+                   'salt_ctd_down', 'salt_ctd_up']
+    
+    # Padder automatiquement toutes les séquences 1D
+    padded_batch = {
+        key: pad_sequence([item[key] for item in batch], 
+                         batch_first=True, 
+                         padding_value=0.0)
+        for key in keys_to_pad
+    }
+    
+    # Traiter input_features séparément (2D: [num_features, seq_len])
+    input_features_list = [item['input_features'].transpose(0, 1) for item in batch]
+    input_features_padded = pad_sequence(input_features_list, batch_first=True, padding_value=0.0)
+    padded_batch['input_features'] = input_features_padded.transpose(1, 2)
+    
+    # Ajouter les longueurs
+    padded_batch['sequence_lengths'] = sequence_lengths
+    
+    return padded_batch
